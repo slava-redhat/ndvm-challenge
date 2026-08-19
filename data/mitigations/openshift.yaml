@@ -1,0 +1,53 @@
+# OpenShift non-disruptive mitigation menu. Data-driven: add entries, re-run ingest.
+platform: openshift
+mitigations:
+  - title: Isolate workloads with a NetworkPolicy
+    action_type: network
+    description: >
+      Apply a NetworkPolicy to cut off ingress/egress to the vulnerable pod so the
+      attack surface is removed without redeploying the workload.
+    disruption: low
+    effectiveness: 3
+    effort: 2
+    applies_when: network-reachable CVE in a namespaced workload
+    source_url: https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/networking/network-security
+  - title: Tighten the Security Context Constraint (SCC)
+    action_type: config
+    description: >
+      Drop capabilities / enforce restricted SCC on the affected workload to block
+      the privilege the exploit needs.
+    disruption: low
+    effectiveness: 3
+    effort: 2
+    applies_when: exploit needs elevated container privileges
+    source_url: https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/authentication_and_authorization/managing-pod-security-policies
+  - title: Block the image/version with an admission policy
+    action_type: config
+    description: >
+      Use an admission controller / ValidatingAdmissionPolicy to prevent scheduling
+      of the vulnerable image tag until a fixed image is available.
+    disruption: medium
+    effectiveness: 4
+    effort: 3
+    applies_when: vulnerable container image identified
+    source_url: https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/security_and_compliance/
+  - title: Scale down the non-essential vulnerable component
+    action_type: disable
+    description: >
+      Temporarily scale the vulnerable, non-critical Deployment to zero to remove
+      the exposure while a fix is scheduled.
+    disruption: medium
+    effectiveness: 4
+    effort: 1
+    applies_when: component non-essential and can be paused
+    source_url: https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/nodes/
+  - title: Confirm "not affected" via Red Hat VEX
+    action_type: verify
+    description: >
+      If Red Hat's signed VEX marks the OpenShift component known_not_affected, take
+      no change and record the VEX as evidence.
+    disruption: none
+    effectiveness: 4
+    effort: 1
+    applies_when: VEX status known_not_affected
+    source_url: https://access.redhat.com/security/data/csaf/v2/vex/

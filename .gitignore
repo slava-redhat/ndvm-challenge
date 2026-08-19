@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+data/pdfs/*.pdf
+.venv/
+.claude/
+
+# docs excluded from this repo (design narrative kept locally)
+CONTEXT.md
+DESIGN.md
+docs/

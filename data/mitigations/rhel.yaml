@@ -1,0 +1,53 @@
+# RHEL non-disruptive mitigation menu. Data-driven: add entries, re-run ingest.
+platform: rhel
+mitigations:
+  - title: Apply a kernel live patch (kpatch)
+    action_type: livepatch
+    description: >
+      Use Red Hat kernel live patching to close a kernel CVE without a reboot,
+      where a live patch is available for the affected kernel.
+    disruption: none
+    effectiveness: 3
+    effort: 2
+    applies_when: kernel CVE, no reboot possible, live patch published
+    source_url: https://access.redhat.com/solutions/2206511
+  - title: Tighten SELinux confinement
+    action_type: selinux
+    description: >
+      Keep SELinux enforcing and confine the affected service so an exploit is
+      contained even if triggered. Non-disruptive, reversible.
+    disruption: low
+    effectiveness: 3
+    effort: 2
+    applies_when: service-level CVE, SELinux available
+    source_url: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/using_selinux/
+  - title: Restrict exposure with firewalld
+    action_type: network
+    description: >
+      Block or scope network access to the vulnerable port/service via firewalld
+      so the attack surface is removed without changing the app.
+    disruption: low
+    effectiveness: 3
+    effort: 1
+    applies_when: network-reachable CVE
+    source_url: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/configuring_firewalls_and_packet_filters/
+  - title: Disable the vulnerable module or feature
+    action_type: disable
+    description: >
+      Turn off the specific module/feature that carries the flaw if it is not in
+      use, removing the vulnerable code path.
+    disruption: medium
+    effectiveness: 4
+    effort: 2
+    applies_when: optional module/feature not required
+    source_url: https://access.redhat.com/security
+  - title: Confirm "not affected" via Red Hat VEX
+    action_type: verify
+    description: >
+      If Red Hat's signed VEX marks your product/version known_not_affected, the
+      correct mitigation is to take no change and record the VEX as evidence.
+    disruption: none
+    effectiveness: 4
+    effort: 1
+    applies_when: VEX status known_not_affected
+    source_url: https://access.redhat.com/security/data/csaf/v2/vex/

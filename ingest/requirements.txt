@@ -1,0 +1,4 @@
+requests>=2.31
+psycopg[binary]>=3.1
+pyyaml>=6.0
+pypdf>=4.2
