@@ -29,9 +29,21 @@ GUIDES = [
      "configuring_firewalls_and_packet_filters", "Configuring_firewalls_and_packet_filters"),
     ("red_hat_enterprise_linux", "Red_Hat_Enterprise_Linux", "9",
      "managing_and_monitoring_security_updates", "Managing_and_monitoring_security_updates"),
+    # RHEL kernel: kpatch / live patching = reboot-free kernel CVE mitigation
+    ("red_hat_enterprise_linux", "Red_Hat_Enterprise_Linux", "9",
+     "managing_monitoring_and_updating_the_kernel", "Managing_monitoring_and_updating_the_kernel"),
     # OpenShift — compensating controls (NetworkPolicy, SCC, admission, node hardening)
     ("openshift_container_platform", "OpenShift_Container_Platform", "4.18",
      "security_and_compliance", "Security_and_compliance"),
+    # Ansible Automation Platform — hardening & compliance
+    ("red_hat_ansible_automation_platform", "Red_Hat_Ansible_Automation_Platform", "2.5",
+     "hardening_and_compliance", "Hardening_and_compliance"),
+    # OpenStack Platform — security & hardening (17.1 renamed the guide; 16.2 has the PDF)
+    ("red_hat_openstack_platform", "Red_Hat_OpenStack_Platform", "16.2",
+     "security_and_hardening_guide", "Security_and_Hardening_Guide"),
+    # Ceph Storage — data security & hardening
+    ("red_hat_ceph_storage", "Red_Hat_Ceph_Storage", "7",
+     "data_security_and_hardening_guide", "Data_Security_and_Hardening_Guide"),
 ]
 
 
