@@ -1,6 +1,7 @@
 """Shared pydantic schemas for the NDVM flow."""
+import json
 from typing import List, Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 Persona = Literal["primary", "secondary"]
 Platform = Literal["rhel", "openshift", "other"]
@@ -99,3 +100,41 @@ class AdviceResult(BaseModel):
     recommended_title: str
     explanation: str
     playbook: Optional[str] = None       # optional Ansible-style artifact
+
+    # ponytail: CrewAI's LLM (Claude via LiteLLM) intermittently emits nested objects/
+    # lists as JSON *strings* instead of objects. Left unhandled, pydantic rejects them
+    # and CrewAI re-runs the slow synth agent up to 4x — the run then blows past the UI's
+    # request timeout and the flow appears "stuck". Parsing them here makes structured
+    # output validate on the first attempt (no retry storm). Upgrade path: if a stringified
+    # field ever nests further strings, recurse — not needed for the flat fields below.
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_json_strings(cls, data):
+        if isinstance(data, dict):
+            for key in ("vulnerability", "priority", "existing_controls", "options"):
+                v = data.get(key)
+                if isinstance(v, str):
+                    try:
+                        data[key] = json.loads(v)
+                    except (ValueError, TypeError):
+                        pass   # leave as-is; normal validation reports the real problem
+        return data
+
+
+if __name__ == "__main__":
+    # Self-check: the exact failure from the logs — vulnerability + priority arrive as
+    # JSON strings — must now validate instead of raising (which caused the retry storm).
+    r = AdviceResult(
+        persona="primary", platform="rhel", environment_summary="x",
+        vulnerability='{"cve_id": "CVE-2021-44228", "threat_severity": "critical"}',
+        priority='{"cve": "CVE-2021-44228", "tier": "act_now"}',
+        options=[], recommended_title="t", explanation="e",
+    )
+    assert r.vulnerability.cve_id == "CVE-2021-44228"
+    assert r.priority.tier == "act_now"
+    # dict/object inputs still work unchanged
+    r2 = AdviceResult(persona="primary", platform="rhel", environment_summary="x",
+                      vulnerability={"cve_id": "CVE-1"}, options=[],
+                      recommended_title="t", explanation="e")
+    assert r2.vulnerability.cve_id == "CVE-1" and r2.priority is None
+    print("ok")

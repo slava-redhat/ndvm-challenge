@@ -429,8 +429,12 @@ if pending:
         rnd = pending["round"] + 1
         force = rnd > MAX_ROUNDS  # ran out of rounds: advise with what we have
         with st.spinner("Re-checking your case…" if not force else "Analysing…"):
-            data = post_advise(pending["orig_msg"], pending["persona"], merged, force,
-                               pending.get("account", ""))
+            try:
+                data = post_advise(pending["orig_msg"], pending["persona"], merged, force,
+                                   pending.get("account", ""))
+            except Exception as e:
+                st.error(f"Orchestrator error: {e}")
+                st.stop()
         if data.get("status") == "need_info" and not force:
             ss["pending"] = {"questions": data["questions"], "missing": data.get("missing", []),
                              "orig_msg": pending["orig_msg"], "persona": pending["persona"],
