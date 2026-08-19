@@ -1,0 +1,127 @@
+{
+  "_comment": "SYNTHETIC demo data. Fictional Red Hat customer account modelled on the Hybrid Cloud Console (Insights Inventory + Vulnerability + Compliance). No real hosts or credentials.",
+
+  "account": {
+    "org_id": "5530917",
+    "account_name": "Helios Health Systems",
+    "industry": "Healthcare / Hospital Network",
+    "segment": "Enterprise",
+    "primary_contact": {
+      "name": "Tom Bergstrom",
+      "role": "Director of Clinical Infrastructure",
+      "email": "tom.bergstrom@helioshealth.example"
+    },
+    "assigned_tam": "S. Iqbal (Red Hat TAM, Healthcare vertical)",
+    "support_level": "Standard",
+    "subscriptions": [
+      {"sku": "RH00003", "name": "Red Hat Enterprise Linux Server, Premium", "quantity": 140, "active": true},
+      {"sku": "RH00011", "name": "RHEL Extended Update Support (EUS)", "quantity": 60, "active": true}
+    ],
+    "insights_registered_systems": 138,
+    "satellite_managed": false
+  },
+
+  "maintenance_policy": {
+    "change_freeze": "Clinical systems are 24/7; downtime requires 4-week clinical-safety review",
+    "next_reboot_window": "2026-11-02",
+    "weeks_until_window": 11,
+    "emergency_change_process": "Clinical Safety Officer sign-off; patient-facing EHR cannot be taken down during care hours",
+    "notes": "Electronic Health Record (EHR) and imaging systems must stay available; unplanned outages are patient-safety events."
+  },
+
+  "systems": [
+    {
+      "hostname": "ehr-app-01.helioshealth.example",
+      "display_name": "EHR Application Server 01",
+      "role": "Clinical — electronic health record application",
+      "criticality": "mission_critical",
+      "rhel_version": "8.6",
+      "eus": true,
+      "running_kernel": "kernel-4.18.0-372.32.1.el8_6.x86_64",
+      "last_reboot": "2026-04-18T04:00:00Z",
+      "uptime_days": 123,
+      "last_checkin": "2026-08-19T07:50:00Z",
+      "network_zone": "internal (clinical VLAN)",
+      "public_exposure": false,
+      "controls": {"selinux": "enforcing", "firewalld": "active", "fips_mode": false, "idm_enrolled": true},
+      "backup": {"type": "snapshot", "frequency": "nightly", "dr_replicated": true},
+      "tags": ["clinical", "ehr", "hipaa"]
+    },
+    {
+      "hostname": "patient-portal-01.helioshealth.example",
+      "display_name": "Patient Portal Web 01",
+      "role": "Edge — patient-facing web portal",
+      "criticality": "high",
+      "rhel_version": "9.2",
+      "eus": false,
+      "running_kernel": "kernel-5.14.0-284.11.1.el9_2.x86_64",
+      "last_reboot": "2026-07-25T05:00:00Z",
+      "uptime_days": 25,
+      "last_checkin": "2026-08-19T07:52:00Z",
+      "network_zone": "internet-facing (public portal)",
+      "public_exposure": true,
+      "controls": {"selinux": "enforcing", "firewalld": "active", "fips_mode": false, "idm_enrolled": false},
+      "backup": {"type": "snapshot", "frequency": "nightly", "dr_replicated": true},
+      "tags": ["edge", "patient-portal", "internet-facing"]
+    },
+    {
+      "hostname": "pacs-img-02.helioshealth.example",
+      "display_name": "PACS Imaging Store 02",
+      "role": "Clinical — medical imaging (PACS)",
+      "criticality": "high",
+      "rhel_version": "7.9",
+      "eus": false,
+      "running_kernel": "kernel-3.10.0-1160.108.1.el7.x86_64",
+      "last_reboot": "2026-03-30T04:30:00Z",
+      "uptime_days": 142,
+      "last_checkin": "2026-08-19T07:48:00Z",
+      "network_zone": "internal (imaging VLAN)",
+      "public_exposure": false,
+      "controls": {"selinux": "permissive", "firewalld": "active", "fips_mode": false, "idm_enrolled": false},
+      "backup": {"type": "snapshot", "frequency": "weekly", "dr_replicated": false},
+      "tags": ["clinical", "pacs", "legacy", "rhel7-els"]
+    }
+  ],
+
+  "insights_vulnerability": {
+    "CVE-2023-3390": {
+      "synopsis": "kernel: netfilter/nf_tables use-after-free",
+      "severity": "Important",
+      "cvss3": 7.8,
+      "red_hat_fix_state": "Fixed",
+      "fixing_advisory": "RHSA-2023:5255",
+      "fixed_nvra": "kernel-0:4.18.0-372.51.1.el8_6",
+      "known_exploited": false,
+      "affected_systems": [
+        {"hostname": "ehr-app-01.helioshealth.example", "status": "affected", "reason": "running kernel below fixed NVRA; reboot required and blocked by clinical hours", "public_exposure": false}
+      ],
+      "systems_not_affected": [
+        {"hostname": "patient-portal-01.helioshealth.example", "reason": "RHEL 9.2 running kernel already above fixed level"}
+      ],
+      "remediation_available": true,
+      "remediation_playbook": "insights-remediation-CVE-2023-3390.yml (kpatch apply, no reboot)"
+    },
+    "CVE-2024-6387": {
+      "synopsis": "openssh: regreSSHion — signal handler race in sshd (RCE)",
+      "severity": "Important",
+      "cvss3": 8.1,
+      "red_hat_fix_state": "Will not fix",
+      "fixing_advisory": null,
+      "known_exploited": false,
+      "affected_systems": [
+        {"hostname": "pacs-img-02.helioshealth.example", "status": "affected", "reason": "RHEL 7 openssh in ELS; no fix planned for this stream — NDVM required", "public_exposure": false}
+      ],
+      "systems_not_affected": [],
+      "remediation_available": true,
+      "remediation_playbook": "insights-remediation-CVE-2024-6387.yml (set LoginGraceTime 0 + restrict source IPs)"
+    }
+  },
+
+  "compliance": {
+    "policy": "HIPAA Security Rule + CIS RHEL Benchmark",
+    "systems": [
+      {"hostname": "ehr-app-01.helioshealth.example", "profile": "cis_rhel8", "score": 84.2, "failed_rules": ["package_aide_installed", "sshd_disable_root_login", "audit_rules_time_change"]},
+      {"hostname": "pacs-img-02.helioshealth.example", "profile": "cis_rhel7", "score": 71.5, "failed_rules": ["selinux_state_enforcing", "package_aide_installed", "sshd_set_loginGraceTime"]}
+    ]
+  }
+}

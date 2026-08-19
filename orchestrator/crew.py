@@ -8,6 +8,8 @@ from crewai import Agent, Crew, Process, Task
 from crewai.flow.flow import Flow, listen, router, start
 from pydantic import BaseModel
 
+from accounts import (account_view, default_cve, detect_account, estate_as_answers,
+                      load_account)
 from cve_parse import ndvm_applies_for
 from llm import get_llm
 from models import AdviceResult, ControlReport, CveChoice, Intake, Sufficiency
@@ -352,8 +354,10 @@ class NDVMState(BaseModel):
     forced_persona: str = ""
     answers: str = ""
     force: bool = False          # skip the gate (e.g. after enough question rounds)
+    account: str = ""            # UI-selected customer account (name or org id)
     intake: Intake | None = None
     gate: Sufficiency | None = None
+    account_view: dict | None = None   # Insights-style estate block for the UI
     result: dict | None = None
 
 
@@ -364,6 +368,27 @@ class NDVMFlow(Flow[NDVMState]):
         if not self.state.intake.on_topic:
             self.state.gate = Sufficiency(sufficient=True)   # unused; refusal handled in route
             return
+
+        # Resolve a customer account: explicit UI selection, or a company name detected
+        # in the message during auto-detect (naming a customer => a TAM referencing them).
+        acc = None
+        if self.state.account:
+            acc = load_account(self.state.account)
+        elif not self.state.forced_persona:
+            acc = detect_account(self.state.message)
+            if acc:
+                self.state.intake.persona = "secondary"  # ponytail: named account => TAM view
+
+        if acc:
+            if not self.state.intake.cve.strip():
+                self.state.intake.cve = default_cve(acc)
+            self.state.intake.account = acc["account"]["account_name"]
+            estate = estate_as_answers(acc, self.state.intake.cve)
+            self.state.answers = (estate + "\n" + self.state.answers).strip()
+            self.state.account_view = account_view(acc, self.state.intake.cve)
+            self.state.gate = Sufficiency(sufficient=True)   # estate answers the gate
+            return
+
         self.state.gate = (Sufficiency(sufficient=True) if self.state.force
                            else run_gate(self.state.message, self.state.intake,
                                          self.state.answers))
@@ -394,10 +419,10 @@ class NDVMFlow(Flow[NDVMState]):
 
 
 def advise(message: str, forced_persona: str = "", answers: str = "",
-           force: bool = False) -> dict:
+           force: bool = False, account: str = "") -> dict:
     flow = NDVMFlow()
     flow.kickoff(inputs={"message": message, "forced_persona": forced_persona,
-                         "answers": answers, "force": force})
+                         "answers": answers, "force": force, "account": account})
     s = flow.state
     if not s.intake.on_topic:
         return {"intake": s.intake.model_dump(), "status": "off_topic", "advice": None,
@@ -409,4 +434,5 @@ def advise(message: str, forced_persona: str = "", answers: str = "",
         return {"intake": s.intake.model_dump(), "status": "need_info", "advice": None,
                 "missing": s.gate.missing,
                 "questions": [q.model_dump() for q in s.gate.questions]}
-    return {"intake": s.intake.model_dump(), "status": "ok", "advice": s.result}
+    return {"intake": s.intake.model_dump(), "status": "ok", "advice": s.result,
+            "account": s.account_view}

@@ -49,6 +49,8 @@ services:
       # Corporate Claude via Vertex: ADC lives in the repo dir (gitignored),
       # mounted read-only as the single credential file the app reads.
       - ./.application_default_credentials.json:/gcloud/application_default_credentials.json:ro,Z
+      # Synthetic customer accounts (Insights-style estate) the TAM flow looks up.
+      - ./data:/app/data:ro,Z
 
   ui:
     build: ./ui

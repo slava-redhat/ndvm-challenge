@@ -15,6 +15,7 @@ class Intake(BaseModel):
     version: str = ""
     cve: str = Field(default="", description="CVE id, e.g. CVE-2023-3390")
     constraint: str = Field(default="", description="the hard constraint, e.g. 'no reboot until quarter-end'")
+    account: str = Field(default="", description="customer account/company name if a TAM named one")
 
 
 class ClarifyQuestion(BaseModel):

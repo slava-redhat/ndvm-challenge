@@ -128,6 +128,17 @@ st.title("🛡️ Non-Disruptive Vulnerability Mitigation")
 st.caption("Can't patch right now? Describe your environment and the CVE — get trusted, "
            "personalized options grounded in Red Hat security data.")
 
+@st.cache_data(ttl=300)
+def fetch_accounts():
+    """Synthetic customer accounts a TAM can look up (Insights-style estate)."""
+    try:
+        r = requests.get(f"{ORCH}/accounts", timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return []
+
+
 persona_label = st.radio(
     "Who are you? (or let the router decide)",
     ["Auto-detect", "Customer / Platform Owner", "Red Hat Support / TAM"],
@@ -136,22 +147,78 @@ persona_label = st.radio(
 persona = {"Customer / Platform Owner": "primary",
            "Red Hat Support / TAM": "secondary"}.get(persona_label)
 
-msg = st.text_area(
-    "Your situation",
-    placeholder="e.g. CVE-2023-3390 is flagged on my RHEL 8 fleet. I can't reboot for "
-                "patching until the quarter-end maintenance window. What can I do now?",
-    height=110,
-)
+# Three tailored inputs — one per persona.
+account = ""  # only the TAM flow selects a customer account to look up
+if persona == "secondary":
+    st.caption("**Red Hat Support / TAM** — look up the customer's estate in Insights, "
+               "then get an evidence-first brief you can relay.")
+    accounts = fetch_accounts()
+    labels = ["(no account — I'll describe it)"] + [
+        f"{a['account_name']} · {a.get('industry','')}" for a in accounts]
+    pick = st.selectbox("Customer account", labels, index=1 if accounts else 0)
+    if pick != labels[0]:
+        account = accounts[labels.index(pick) - 1]["account_name"]
+    msg = st.text_area(
+        "What are you looking into for this customer?",
+        placeholder="e.g. CVE-2024-1086 — which of their hosts are affected and what can "
+                    "they do without a reboot?",
+        height=90,
+    )
+elif persona == "primary":
+    st.caption("**Customer / Platform Owner** — describe your situation; I'll ask a few "
+               "quick questions so the advice fits your environment, then give you options.")
+    msg = st.text_area(
+        "Your situation",
+        placeholder="e.g. CVE-2023-3390 is flagged on my RHEL 8 fleet. I can't reboot for "
+                    "patching until the quarter-end maintenance window. What can I do now?",
+        height=110,
+    )
+else:
+    st.caption("**Auto-detect** — just describe it. Name a known customer (e.g. *Meridian*) "
+               "and I'll pull their estate and switch to the TAM view automatically.")
+    msg = st.text_area(
+        "Your situation",
+        placeholder="e.g. Is Meridian Telecom affected by CVE-2023-3390, and what can they "
+                    "do without rebooting?",
+        height=110,
+    )
 
 MAX_ROUNDS = 2  # ponytail: stop questioning after 2 rounds and advise anyway (force)
 
 
-def post_advise(message, persona, answers="", force=False):
+def post_advise(message, persona, answers="", force=False, account=""):
     resp = requests.post(f"{ORCH}/advise",
-                         json={"message": message, "persona": persona,
-                               "answers": answers, "force": force}, timeout=300)
+                         json={"message": message, "persona": persona, "answers": answers,
+                               "force": force, "account": account}, timeout=300)
     resp.raise_for_status()
     return resp.json()
+
+
+def render_account(acc):
+    """Insights-style estate panel shown above the advice for the TAM flow."""
+    st.markdown(f"### 🏢 {acc.get('account_name','')}")
+    meta = st.columns(3)
+    meta[0].metric("Registered systems", acc.get("estate_size", "?"))
+    cv = acc.get("cve") or {}
+    meta[1].metric("Affected by this CVE", len(cv.get("affected", [])))
+    mw = acc.get("maintenance", {})
+    meta[2].metric("Reboot window", mw.get("next_reboot_window", "—"))
+    if acc.get("assigned_tam"):
+        st.caption(f"Industry: {acc.get('industry','')}  ·  TAM: {acc['assigned_tam']}  ·  "
+                   f"org {acc.get('org_id','')}")
+    if mw.get("change_freeze"):
+        st.caption(f"Change policy: {mw['change_freeze']}")
+    if cv.get("affected"):
+        st.markdown(f"**Hosts affected by `{cv.get('cve','')}`** "
+                    f"(severity {cv.get('severity','?')}, fix_state {cv.get('red_hat_fix_state','?')}"
+                    + (", ⚠️ known-exploited" if cv.get("known_exploited") else "") + ")")
+        st.table([{"host": h.get("hostname", ""), "status": h.get("status", ""),
+                   "exposure": "internet-facing" if h.get("public_exposure") else "internal",
+                   "why": h.get("reason", "")} for h in cv["affected"]])
+    if cv.get("not_affected"):
+        st.caption("Not affected: " + ", ".join(h.get("hostname", "") for h in cv["not_affected"]))
+    if cv.get("remediation_playbook"):
+        st.caption(f"Insights remediation available: `{cv['remediation_playbook']}`")
 
 
 def render_advice(intake, advice):
@@ -257,11 +324,13 @@ if pending:
         rnd = pending["round"] + 1
         force = rnd > MAX_ROUNDS  # ran out of rounds: advise with what we have
         with st.spinner("Re-checking your case…" if not force else "Analysing…"):
-            data = post_advise(pending["orig_msg"], pending["persona"], merged, force)
+            data = post_advise(pending["orig_msg"], pending["persona"], merged, force,
+                               pending.get("account", ""))
         if data.get("status") == "need_info" and not force:
             ss["pending"] = {"questions": data["questions"], "missing": data.get("missing", []),
                              "orig_msg": pending["orig_msg"], "persona": pending["persona"],
-                             "answers": merged, "round": rnd}
+                             "answers": merged, "round": rnd,
+                             "account": pending.get("account", "")}
             ss.pop("result", None)
         else:
             ss.pop("pending", None)
@@ -272,13 +341,14 @@ if pending:
 elif st.button("Get mitigation options", type="primary") and msg.strip():
     with st.spinner("Routing → checking your case fits → analysing → ranking…"):
         try:
-            data = post_advise(msg, persona)
+            data = post_advise(msg, persona, account=account)
         except Exception as e:
             st.error(f"Orchestrator error: {e}")
             st.stop()
     if data.get("status") == "need_info":
         ss["pending"] = {"questions": data["questions"], "missing": data.get("missing", []),
-                         "orig_msg": msg, "persona": persona, "answers": "", "round": 1}
+                         "orig_msg": msg, "persona": persona, "answers": "", "round": 1,
+                         "account": account}
         ss.pop("result", None)
     else:
         ss["result"] = data
@@ -292,6 +362,8 @@ if ss.get("result"):
     else:
         intake = data.get("intake", {})
         advice = data.get("advice") or {}
+        if data.get("account"):
+            render_account(data["account"])
         if advice:
             render_advice(intake, advice)
         else:

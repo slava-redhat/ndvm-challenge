@@ -1,0 +1,129 @@
+{
+  "_comment": "SYNTHETIC demo data. Fictional Red Hat customer account modelled on the Hybrid Cloud Console (Insights Inventory + Vulnerability + Compliance). No real hosts or credentials.",
+
+  "account": {
+    "org_id": "7182044",
+    "account_name": "Northwind Financial Services",
+    "industry": "Banking / Financial Services",
+    "segment": "Strategic / Large Enterprise",
+    "primary_contact": {
+      "name": "Priya Nair",
+      "role": "Head of Platform Engineering",
+      "email": "priya.nair@northwindfs.example"
+    },
+    "assigned_tam": "M. Alvarez (Red Hat TAM, FSI vertical)",
+    "support_level": "Premium",
+    "subscriptions": [
+      {"sku": "RH00003", "name": "Red Hat Enterprise Linux Server, Premium", "quantity": 320, "active": true},
+      {"sku": "MW00203", "name": "Red Hat OpenShift Container Platform", "quantity": 64, "active": true},
+      {"sku": "MCT3718", "name": "Red Hat Smart Management (Satellite)", "quantity": 320, "active": true}
+    ],
+    "insights_registered_systems": 318,
+    "satellite_managed": true
+  },
+
+  "maintenance_policy": {
+    "change_freeze": "PCI-DSS quarterly attestation freeze in effect",
+    "next_reboot_window": "2026-10-15",
+    "weeks_until_window": 8,
+    "emergency_change_process": "CAB + risk sign-off; production card-processing hosts require dual approval",
+    "notes": "Card Data Environment (CDE) hosts are air-gapped; changes are heavily controlled and audited."
+  },
+
+  "systems": [
+    {
+      "hostname": "cde-txn-01.northwindfs.example",
+      "display_name": "Card Transaction Processor 01",
+      "role": "CDE — payment transaction processing",
+      "criticality": "mission_critical",
+      "rhel_version": "8.9",
+      "eus": true,
+      "running_kernel": "kernel-4.18.0-513.5.1.el8_9.x86_64",
+      "last_reboot": "2026-06-01T03:00:00Z",
+      "uptime_days": 79,
+      "last_checkin": "2026-08-19T08:15:00Z",
+      "network_zone": "air-gapped (CDE segment, no internet egress)",
+      "public_exposure": false,
+      "controls": {"selinux": "enforcing", "firewalld": "active", "fips_mode": true, "idm_enrolled": true},
+      "backup": {"type": "snapshot+offsite", "frequency": "hourly", "dr_replicated": true},
+      "tags": ["cde", "pci", "payments"]
+    },
+    {
+      "hostname": "ob-api-gw-02.northwindfs.example",
+      "display_name": "Open Banking API Gateway 02",
+      "role": "Edge — open banking API gateway",
+      "criticality": "high",
+      "rhel_version": "9.3",
+      "eus": false,
+      "running_kernel": "kernel-5.14.0-362.8.1.el9_3.x86_64",
+      "last_reboot": "2026-07-20T02:30:00Z",
+      "uptime_days": 30,
+      "last_checkin": "2026-08-19T08:16:00Z",
+      "network_zone": "internet-facing (public API)",
+      "public_exposure": true,
+      "controls": {"selinux": "enforcing", "firewalld": "active", "fips_mode": true, "idm_enrolled": true},
+      "backup": {"type": "snapshot", "frequency": "nightly", "dr_replicated": true},
+      "tags": ["edge", "open-banking", "internet-facing"]
+    },
+    {
+      "hostname": "risk-batch-04.northwindfs.example",
+      "display_name": "Overnight Risk Batch 04",
+      "role": "Analytics — overnight risk batch",
+      "criticality": "medium",
+      "rhel_version": "8.9",
+      "eus": true,
+      "running_kernel": "kernel-4.18.0-513.5.1.el8_9.x86_64",
+      "last_reboot": "2026-06-01T03:20:00Z",
+      "uptime_days": 79,
+      "last_checkin": "2026-08-19T08:14:00Z",
+      "network_zone": "internal (segmented VLAN)",
+      "public_exposure": false,
+      "controls": {"selinux": "enforcing", "firewalld": "active", "fips_mode": false, "idm_enrolled": true},
+      "backup": {"type": "snapshot", "frequency": "nightly", "dr_replicated": false},
+      "tags": ["analytics", "batch"]
+    }
+  ],
+
+  "insights_vulnerability": {
+    "CVE-2024-1086": {
+      "synopsis": "kernel: netfilter nf_tables use-after-free (nft_verdict) — actively exploited",
+      "severity": "Important",
+      "cvss3": 7.8,
+      "red_hat_fix_state": "Fixed",
+      "fixing_advisory": "RHSA-2024:2394",
+      "fixed_nvra": "kernel-0:4.18.0-513.24.1.el8_9",
+      "known_exploited": true,
+      "affected_systems": [
+        {"hostname": "cde-txn-01.northwindfs.example", "status": "affected", "reason": "running kernel below fixed NVRA; reboot required", "public_exposure": false},
+        {"hostname": "risk-batch-04.northwindfs.example", "status": "affected", "reason": "running kernel below fixed NVRA; reboot required", "public_exposure": false}
+      ],
+      "systems_not_affected": [
+        {"hostname": "ob-api-gw-02.northwindfs.example", "reason": "RHEL 9.3 running kernel already above fixed level"}
+      ],
+      "remediation_available": true,
+      "remediation_playbook": "insights-remediation-CVE-2024-1086.yml (kpatch + nf_tables module blacklist)"
+    },
+    "CVE-2023-44487": {
+      "synopsis": "HTTP/2 rapid reset DoS",
+      "severity": "Important",
+      "cvss3": 7.5,
+      "red_hat_fix_state": "Fixed",
+      "fixing_advisory": "RHSA-2023:5838",
+      "known_exploited": true,
+      "affected_systems": [
+        {"hostname": "ob-api-gw-02.northwindfs.example", "status": "affected", "reason": "service restart required to apply fixed library", "public_exposure": true}
+      ],
+      "systems_not_affected": [],
+      "remediation_available": true,
+      "remediation_playbook": "insights-remediation-CVE-2023-44487.yml (patch + graceful service reload)"
+    }
+  },
+
+  "compliance": {
+    "policy": "PCI-DSS v4.0",
+    "systems": [
+      {"hostname": "cde-txn-01.northwindfs.example", "profile": "pci-dss", "score": 97.1, "failed_rules": ["audit_rules_privileged_commands"]},
+      {"hostname": "ob-api-gw-02.northwindfs.example", "profile": "pci-dss", "score": 93.5, "failed_rules": ["sysctl_net_ipv4_conf_all_accept_redirects", "package_aide_installed"]}
+    ]
+  }
+}
