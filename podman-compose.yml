@@ -46,8 +46,9 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Corporate Claude via Vertex: mount host ADC read-only (Q9).
-      - ${HOME}/.config/gcloud:/gcloud:ro,Z
+      # Corporate Claude via Vertex: ADC lives in the repo dir (gitignored),
+      # mounted read-only as the single credential file the app reads.
+      - ./.application_default_credentials.json:/gcloud/application_default_credentials.json:ro,Z
 
   ui:
     build: ./ui

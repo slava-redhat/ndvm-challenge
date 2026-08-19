@@ -1,4 +1,7 @@
 .env
+# NEVER commit credentials — Vertex ADC lives in the repo dir but stays untracked.
+*application_default_credentials.json
+*.json.cred
 __pycache__/
 *.pyc
 data/pdfs/*.pdf
