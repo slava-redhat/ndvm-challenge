@@ -1,12 +1,33 @@
 """CrewAI agents + tasks + the router Flow.
 
 Flow: triage(Router) -> @router(persona) -> primary|secondary crew.
-Both personas share the analysis agents (profiler, analyst, retriever, strategist)
+Both personas share the analysis agents (analyst, retriever, validator, strategist)
 and differ only in the final synthesizer (Customer Advisor vs TAM Briefer).
+
+run_advice fans the analysis out in three waves for latency: [analyst ‖ retriever] ->
+[validator ‖ strategist] -> synth (see _kick). Mechanical agents run on the fast LLM tier.
 """
+import os as _os
+
+# Must be set BEFORE crewai is imported. Kills two container-hostile behaviours that
+# dominated request latency: (1) the OTEL telemetry exporter, which blocks with exponential
+# backoff retrying an unreachable collector, and (2) the interactive first-run "view your
+# execution traces? [y/N]" prompt that waits 20s on stdin that never answers.
+_os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+_os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
+
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 from crewai import Agent, Crew, Process, Task
 from crewai.flow.flow import Flow, listen, router, start
 from pydantic import BaseModel
+
+try:  # belt-and-braces: mark first-run done so the 20s trace prompt never fires
+    from crewai.events.listeners.tracing.utils import mark_first_execution_done
+    mark_first_execution_done()
+except Exception:  # pragma: no cover - internal API, tolerate its absence
+    pass
 
 from accounts import (account_view, default_cve, detect_account, estate_as_answers,
                       load_account)
@@ -36,22 +57,15 @@ def _router_agent() -> Agent:
             "Red Hat Support engineer or TAM, and you extract the essentials: platform, "
             "version, the CVE, and the hard constraint that blocks patching."
         ),
-        llm=LLM,
+        llm=get_llm(fast=True),   # classification + field extraction: mechanical → fast tier
         verbose=False,
     )
 
 
 def _analysis_agents() -> dict[str, Agent]:
-    profiler = Agent(
-        role="Environment Profiler",
-        goal="Turn messy human descriptions into a precise environment profile.",
-        backstory=(
-            "You capture exactly what a customer runs — platform, product, version, "
-            "exposure — and the real-world constraint (e.g. 'no reboot until quarter-end') "
-            "that rules out immediate patching."
-        ),
-        llm=LLM, verbose=False,
-    )
+    # Each agent gets its OWN LLM instance: the analyst+retriever (and validator+strategist)
+    # pairs run concurrently on separate threads, so they must not share a mutable LLM object.
+    # Mechanical agents (CVE lookup, RAG retrieval, discovery) run on the fast tier.
     researcher = Agent(
         role="Red Hat CVE Researcher",
         goal="Discover which CVEs actually affect the customer's software and surface the ones that matter.",
@@ -61,7 +75,9 @@ def _analysis_agents() -> dict[str, Agent]:
             "asks 'what should I worry about', you find the relevant CVEs and their "
             "advisories from Red Hat's own public data, never from memory."
         ),
-        tools=[SEARCH_TOOL], llm=LLM, verbose=False,
+        # Strong tier: discovering AND picking the single most-relevant CVE from a search is
+        # judgment, not lookup — the fast tier reliably fumbled it (returned no CVE).
+        tools=[SEARCH_TOOL], llm=get_llm(), verbose=False,
     )
     analyst = Agent(
         role="Red Hat Vulnerability Analyst",
@@ -71,7 +87,7 @@ def _analysis_agents() -> dict[str, Agent]:
             "severity, whether a fix shipped, and the Fix State (Fix deferred / Will not "
             "fix / Not affected...). You never guess — you read the data and cite it."
         ),
-        tools=[SEC_TOOL], llm=LLM, verbose=False,
+        tools=[SEC_TOOL], llm=get_llm(fast=True), verbose=False,
     )
     retriever = Agent(
         role="Mitigation Knowledge Retriever",
@@ -81,7 +97,7 @@ def _analysis_agents() -> dict[str, Agent]:
             "options that fit the platform. You never invent a control that isn't in the "
             "knowledge base."
         ),
-        tools=[RAG_TOOL], llm=LLM, verbose=False,
+        tools=[RAG_TOOL], llm=get_llm(fast=True), verbose=False,
     )
     validator = Agent(
         role="Compensating Control Validator",
@@ -94,7 +110,7 @@ def _analysis_agents() -> dict[str, Agent]:
             "THIS exploit path — grounded in Red Hat guidance, never guessed. You never "
             "credit a control the customer did not say they have."
         ),
-        llm=LLM, verbose=False,
+        llm=get_llm(), verbose=False,
     )
     strategist = Agent(
         role="Risk & Trade-off Strategist",
@@ -104,9 +120,9 @@ def _analysis_agents() -> dict[str, Agent]:
             "customer's hard constraint, then choose the one you'd stake your name on and "
             "explain why the others rank lower."
         ),
-        llm=LLM, verbose=False,
+        llm=get_llm(), verbose=False,
     )
-    return {"profiler": profiler, "researcher": researcher, "analyst": analyst,
+    return {"researcher": researcher, "analyst": analyst,
             "retriever": retriever, "validator": validator, "strategist": strategist}
 
 
@@ -238,6 +254,13 @@ def run_research(intake: Intake) -> CveChoice:
     return crew.kickoff(inputs={**intake.model_dump()}).pydantic
 
 
+def _kick(agent: Agent, task: Task, inputs: dict):
+    """Run one agent+task as a single-task crew. Lets a wave fan out across threads, each
+    with its own crew, instead of one sequential crew (CrewAI serializes tasks in a crew)."""
+    return Crew(agents=[agent], tasks=[task], process=Process.sequential,
+                verbose=False).kickoff(inputs=inputs)
+
+
 def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
     # Pin the CVE deterministically: use the one the customer gave, else research once
     # and lock the pick in Python so the Analyst can't switch to a different CVE.
@@ -250,18 +273,12 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
 
     a = _analysis_agents()
     synth = _synth_agent(persona)
+    base = {**intake.model_dump(), "persona": persona, "answers": answers or "none",
+            "priority_note": priority_note(sig)}
 
-    profile = Task(
-        description=(
-            "Summarize the environment: platform={platform}, product='{product}', "
-            "version='{version}'. State the hard constraint that blocks patching: "
-            "'{constraint}'. Fold in these specific customer answers from the intake "
-            "questionnaire (may say 'none'):\n---\n{answers}\n---\n"
-            "Reflect exposure, backups/DR and the real maintenance window if given."
-        ),
-        expected_output="A one-paragraph environment summary.",
-        agent=a["profiler"],
-    )
+    # ---- Wave A: analyst (RH security data) + retriever (RAG) are independent → run them
+    # concurrently. Threads (not asyncio) because flow.kickoff() already owns an event loop,
+    # and the calls are network-bound so the GIL is released during each LLM/tool round-trip.
     analyze = Task(
         description=(
             "Look up EXACTLY the CVE '{cve}' for product '{product}' using the "
@@ -281,25 +298,38 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
         expected_output="A list of grounded candidate mitigations with sources.",
         agent=a["retriever"],
     )
+    _t0 = time.time()
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fa = ex.submit(_kick, a["analyst"], analyze, base)
+        fr = ex.submit(_kick, a["retriever"], retrieve, base)
+        analyst_finding, retrieved = fa.result().raw, fr.result().raw
+    _tA = time.time()
+
+    # ---- Wave B: validator + strategist both consume A but not each other → concurrent.
+    # A's outputs are injected as inputs (interpolate_only leaves their JSON braces intact),
+    # replacing CrewAI's context= hand-off which requires one sequential crew.
+    ctx = {**base, "analyst_finding": analyst_finding, "retrieved_candidates": retrieved}
     validate = Task(
         description=(
             "From the customer's answers, list the security controls they ALREADY have in "
             "place:\n---\n{answers}\n---\n"
-            "For CVE '{cve}', using the analyst's finding (attack vector, fix_state) and the "
-            "retrieved Red Hat guidance, assess EACH existing control: status is 'mitigated' "
-            "(fully blocks this exploit path), 'partial' (reduces exposure but is not a full "
-            "fix), 'not_mitigated', or 'unknown'. Give a one-line rationale and cite a "
-            "source. Do NOT assess controls the customer did not mention and never invent "
-            "controls. If they mention none, return an empty list."
+            "Analyst finding for CVE '{cve}':\n---\n{analyst_finding}\n---\n"
+            "Retrieved Red Hat guidance:\n---\n{retrieved_candidates}\n---\n"
+            "Assess EACH existing control against this CVE's attack vector and fix_state: "
+            "status is 'mitigated' (fully blocks this exploit path), 'partial' (reduces "
+            "exposure but is not a full fix), 'not_mitigated', or 'unknown'. Give a one-line "
+            "rationale and cite a source. Do NOT assess controls the customer did not mention "
+            "and never invent controls. If they mention none, return an empty list."
         ),
         expected_output="A ControlReport: each existing control with status, rationale, source_urls.",
         agent=a["validator"],
-        context=[analyze, retrieve],
         output_pydantic=ControlReport,
     )
     strategize = Task(
         description=(
-            "Rank the retrieved candidates by disruption, effectiveness and effort for the "
+            "Analyst finding:\n---\n{analyst_finding}\n---\n"
+            "Retrieved candidate mitigations:\n---\n{retrieved_candidates}\n---\n"
+            "Rank these candidates by disruption, effectiveness and effort for the "
             "constraint '{constraint}', weighing the customer's specific answers:\n"
             "---\n{answers}\n---\n"
             "Exploitation urgency for this CVE: {priority_note} "
@@ -311,53 +341,61 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
         ),
         expected_output="A ranked shortlist with a recommended option and rationale.",
         agent=a["strategist"],
-        context=[analyze, retrieve],
     )
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fv = ex.submit(_kick, a["validator"], validate, ctx)
+        fs = ex.submit(_kick, a["strategist"], strategize, ctx)
+        control_report: ControlReport = fv.result().pydantic
+        strategy = fs.result().raw
+    _tB = time.time()
+
+    # ---- Wave C: synth folds everything (incl. the environment summary the dropped profiler
+    # agent used to write) into the final AdviceResult.
     tone = ("Write for a Red Hat TAM: dense, evidence-first, every claim cited."
             if persona == "secondary"
             else "Write for a stressed Platform Owner: plain, confident, reassuring.")
+    synth_inputs = {**ctx, "controls_json": control_report.model_dump_json(),
+                    "strategy": strategy}
     synthesize = Task(
         description=(
             f"{tone} Produce the final AdviceResult. Set persona='{persona}', "
-            "platform='{platform}'. The 'vulnerability' field MUST be a JSON OBJECT (never a "
-            "string, never '{{}}'), copied exactly from the analyst's tool output with all "
-            "fields: cve_id, threat_severity, cvss3, fix_state, ndvm_applies, rhsa, "
-            "fixed_nvra, rationale, source_urls. Copy the validator's control "
-            "assessments verbatim into existing_controls (control, status, rationale, "
-            "source_urls). If any existing control is 'mitigated', lead the explanation with "
-            "the fact that the customer may already be protected. Write 'business_risk': 2-4 "
-            "sentences a platform owner could relay to a non-technical manager — what could "
-            "happen in plain terms (no CVSS/CVE jargon), how exposed they are RIGHT NOW given "
-            "the constraint '{constraint}' and any compensating controls above, and roughly "
-            "how long that exposure lasts until they can patch. If a control fully mitigates, "
-            "say the residual business risk is low. Reflect the exploitation urgency in plain "
+            "platform='{platform}'. Write 'environment_summary': ONE paragraph capturing "
+            "product '{product}' version '{version}', the constraint '{constraint}', and the "
+            "exposure / backups / maintenance window from these customer answers (may say "
+            "'none'):\n---\n{answers}\n---\n"
+            "The 'vulnerability' field MUST be a JSON OBJECT (never a string, never '{{}}'), "
+            "copied exactly from this analyst finding with all fields (cve_id, "
+            "threat_severity, cvss3, fix_state, ndvm_applies, rhsa, fixed_nvra, rationale, "
+            "source_urls):\n---\n{analyst_finding}\n---\n"
+            "Copy these control assessments verbatim into existing_controls (control, status, "
+            "rationale, source_urls):\n---\n{controls_json}\n---\n"
+            "If any existing control is 'mitigated', lead the explanation with the fact that "
+            "the customer may already be protected. Write 'business_risk': 2-4 sentences a "
+            "platform owner could relay to a non-technical manager — what could happen in "
+            "plain terms (no CVSS/CVE jargon), how exposed they are RIGHT NOW given the "
+            "constraint '{constraint}' and any compensating controls above, and roughly how "
+            "long that exposure lasts until they can patch. If a control fully mitigates, say "
+            "the residual business risk is low. Reflect the exploitation urgency in plain "
             "terms — {priority_note} — e.g. 'attackers are already exploiting this' if "
             "known-exploited. Do not invent impact beyond the severity, exposure and this "
-            "urgency established above. Fill options from the "
-            "strategist's ranking, each with disruption, effectiveness (1-4), effort (1-4) "
-            "and source_urls. Write a clear explanation of the trade-offs that favours the "
-            "LEAST DISRUPTIVE option that is still effective for the constraint "
-            "'{constraint}' (the options are re-ranked deterministically by a "
-            "disruption-weighted score afterwards, so keep your explanation consistent with "
-            "that preference and set recommended_title accordingly). If the recommended "
-            "option is automatable, put a short Ansible-style snippet in 'playbook'."
+            "urgency established above. Fill options from this ranking:\n---\n{strategy}\n---\n"
+            "each with disruption, effectiveness (1-4), effort (1-4) and source_urls. Write a "
+            "clear explanation of the trade-offs that favours the LEAST DISRUPTIVE option "
+            "that is still effective for the constraint '{constraint}' (the options are "
+            "re-ranked deterministically by a disruption-weighted score afterwards, so keep "
+            "your explanation consistent with that preference and set recommended_title "
+            "accordingly). If the recommended option is automatable, put a short Ansible-style "
+            "snippet in 'playbook'."
         ),
         expected_output="A complete AdviceResult.",
         agent=synth,
-        context=[profile, analyze, retrieve, validate, strategize],
         output_pydantic=AdviceResult,
     )
-    crew = Crew(
-        agents=[a["profiler"], a["analyst"], a["retriever"], a["validator"],
-                a["strategist"], synth],
-        tasks=[profile, analyze, retrieve, validate, strategize, synthesize],
-        process=Process.sequential,
-        verbose=False,
-    )
-    out = crew.kickoff(inputs={**intake.model_dump(), "persona": persona,
-                               "answers": answers or "none",
-                               "priority_note": priority_note(sig)})
-    result: AdviceResult = out.pydantic
+    result: AdviceResult = _kick(synth, synthesize, synth_inputs).pydantic
+    _tC = time.time()
+    print(f"[timing] waveA(analyst‖retriever)={_tA-_t0:.1f}s "
+          f"waveB(validator‖strategist)={_tB-_tA:.1f}s waveC(synth)={_tC-_tB:.1f}s "
+          f"crew_total={_tC-_t0:.1f}s", flush=True)
     # ponytail: pin ndvm_applies from the authoritative fix_state so the synth LLM can't
     # flip it to False on a "Fixed" CVE the customer still can't reboot to apply.
     result.vulnerability.ndvm_applies = ndvm_applies_for(result.vulnerability.fix_state)
