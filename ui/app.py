@@ -6,6 +6,50 @@ import streamlit as st
 ORCH = os.environ.get("ORCHESTRATOR_URL", "http://localhost:8000")
 DISRUPTION_COLOR = {"none": "🟢", "low": "🟢", "medium": "🟠", "high": "🔴"}
 CONTROL_ICON = {"mitigated": "✅", "partial": "🟡", "not_mitigated": "❌", "unknown": "⚪"}
+TIER_BADGE = {"act_now": ("🔴", "Act now"), "prioritize": ("🟠", "Prioritize"),
+              "scheduled": ("🟡", "Scheduled"), "routine": ("⚪", "Routine")}
+
+
+# P4 — provenance: label each source by trust tier so David sees WHY to trust a fact.
+# Pure domain match (no model), highest-trust first wins.
+SOURCE_TIERS = [
+    (("access.redhat.com", "bugzilla.redhat.com"), "🛡️", "Red Hat official"),
+    (("cisa.gov",), "🚨", "CISA (US gov)"),
+    (("first.org",), "📊", "FIRST EPSS"),
+    (("nvd.nist.gov", "cve.org", "cve.mitre.org", "mitre.org"), "🏛️", "NVD / MITRE"),
+]
+
+
+def source_tier(url: str) -> tuple[str, str]:
+    low = (url or "").lower()
+    for domains, icon, label in SOURCE_TIERS:
+        if any(d in low for d in domains):
+            return icon, label
+    return "🔗", "Other source"
+
+
+def src_label(url: str) -> str:
+    icon, label = source_tier(url)
+    return f"{icon} {label} — {url}"
+
+
+def src_tag(url: str) -> str:
+    """Plain '[tier] url' for exports (no emoji; survives latin-1 PDF)."""
+    _, label = source_tier(url)
+    return f"[{label}] {url}"
+
+
+def priority_line(pr: dict) -> str:
+    """One human line from an ExploitSignal dict, or '' if absent."""
+    if not pr:
+        return ""
+    icon, label = TIER_BADGE.get(pr.get("tier", "routine"), ("⚪", "Routine"))
+    bits = [f"{icon} **{label}**"]
+    if pr.get("in_kev"):
+        bits.append("known-exploited (CISA KEV)")
+    if pr.get("epss") is not None:
+        bits.append(f"EPSS {pr['epss']:.0%}")
+    return " · ".join(bits)
 
 
 def dots(n: int) -> str:
@@ -26,18 +70,27 @@ def report_md(intake: dict, advice: dict) -> str:
            f"- **Fix state:** {v.get('fix_state','?')}",
            f"- **CVSS v3:** {v.get('cvss3') or '—'}",
            f"- **NDVM applies:** {'Yes' if v.get('ndvm_applies') else 'No'}"]
+    pr = advice.get("priority") or {}
+    if pr:
+        icon, label = TIER_BADGE.get(pr.get("tier", "routine"), ("", "Routine"))
+        out.append(f"- **Exploitation urgency:** {icon} {label}"
+                   + (" · known-exploited (CISA KEV)" if pr.get("in_kev") else "")
+                   + (f" · EPSS {pr['epss']:.0%}" if pr.get("epss") is not None else ""))
+        if pr.get("rationale"):
+            out.append(f"  - {pr['rationale']}")
+        out += [f"  - source: {src_tag(s)}" for s in pr.get("source_urls", [])]
     if v.get("rhsa"):
         out.append(f"- **Fixing erratum:** {v['rhsa']} → {v.get('fixed_nvra','')}")
     if v.get("rationale"):
         out.append("\n" + v["rationale"])
-    out += [f"- source: {s}" for s in v.get("source_urls", [])]
+    out += [f"- source: {src_tag(s)}" for s in v.get("source_urls", [])]
     controls = advice.get("existing_controls", [])
     if controls:
         out.append("\n## Controls you already have")
         for c in controls:
             out.append(f"- **{c.get('control','')}** — {c.get('status','?').replace('_',' ')}"
                        + (f": {c['rationale']}" if c.get("rationale") else ""))
-            out += [f"  - source: {s}" for s in c.get("source_urls", [])]
+            out += [f"  - source: {src_tag(s)}" for s in c.get("source_urls", [])]
     if advice.get("business_risk"):
         out += ["\n## What this means for your business", advice["business_risk"]]
     out.append("\n## Mitigation options (ranked)")
@@ -49,7 +102,7 @@ def report_md(intake: dict, advice: dict) -> str:
         if o.get("description"):
             out.append(o["description"])
         out += [f"  - {s}" for s in o.get("steps", [])]
-        out += [f"  - source: {s}" for s in o.get("source_urls", [])]
+        out += [f"  - source: {src_tag(s)}" for s in o.get("source_urls", [])]
     out += ["\n## Recommended approach", advice.get("explanation", "")]
     if advice.get("playbook"):
         out += ["\n## Playbook", "```yaml", advice["playbook"], "```"]
@@ -89,19 +142,29 @@ def report_pdf(intake: dict, advice: dict) -> bytes:
     pdf.ln(1); h("Vulnerability")
     p(f"Fix state: {v.get('fix_state','?')}")
     p(f"CVSS v3: {v.get('cvss3') or '-'}    NDVM applies: {'Yes' if v.get('ndvm_applies') else 'No'}")
+    pr = advice.get("priority") or {}
+    if pr:
+        _, label = TIER_BADGE.get(pr.get("tier", "routine"), ("", "Routine"))
+        p(f"Exploitation urgency: {label}"
+          + (" | known-exploited (CISA KEV)" if pr.get("in_kev") else "")
+          + (f" | EPSS {pr['epss']:.0%}" if pr.get("epss") is not None else ""))
+        if pr.get("rationale"):
+            p(pr["rationale"])
+        for s in pr.get("source_urls", []):
+            p(f"source: {src_tag(s)}")
     if v.get("rhsa"):
         p(f"Fixing erratum: {v['rhsa']} -> {v.get('fixed_nvra','')}")
     if v.get("rationale"):
         p(v["rationale"])
     for s in v.get("source_urls", []):
-        p(f"source: {s}")
+        p(f"source: {src_tag(s)}")
     controls = advice.get("existing_controls", [])
     if controls:
         pdf.ln(1); h("Controls you already have")
         for c in controls:
             p(f"[{c.get('status','?').replace('_',' ')}] {c.get('control','')}: {c.get('rationale','')}")
             for s in c.get("source_urls", []):
-                p(f"  source: {s}")
+                p(f"  source: {src_tag(s)}")
     if advice.get("business_risk"):
         pdf.ln(1); h("What this means for your business"); p(advice["business_risk"])
     pdf.ln(1); h("Mitigation options (ranked)")
@@ -115,7 +178,7 @@ def report_pdf(intake: dict, advice: dict) -> bytes:
         for s in o.get("steps", []):
             p(f"  - {s}")
         for s in o.get("source_urls", []):
-            p(f"  source: {s}")
+            p(f"  source: {src_tag(s)}")
     pdf.ln(1); h("Recommended approach"); p(advice.get("explanation", ""))
     if advice.get("playbook"):
         h("Playbook"); pdf.set_font("Courier", "", 8)
@@ -139,6 +202,34 @@ def fetch_accounts():
         return []
 
 
+@st.cache_data(ttl=300)
+def fetch_triage(account):
+    """Whole-estate CVE triage (KEV+EPSS ranked) for one customer."""
+    try:
+        r = requests.get(f"{ORCH}/triage", params={"account": account}, timeout=60)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return {}
+
+
+def render_triage(tri):
+    """Respond-at-scale board: all of a customer's tracked CVEs, most urgent first."""
+    if not tri.get("cves"):
+        return
+    with st.expander(f"📊 Full exposure for {tri.get('account','')} — all tracked CVEs, "
+                     f"triaged by KEV + EPSS", expanded=True):
+        st.caption("Start at the top. Name a CVE below to deep-dive it into options.")
+        st.table([{"CVE": r["cve"],
+                   "urgency": f"{TIER_BADGE.get(r['tier'],('⚪',''))[0]} "
+                              f"{r['tier'].replace('_',' ')}",
+                   "known-exploited": "⚠️ yes" if r.get("in_kev") else "—",
+                   "EPSS": f"{r['epss']:.0%}" if r.get("epss") is not None else "—",
+                   "affected": r.get("affected_count", 0),
+                   "internet-facing": r.get("internet_facing", 0),
+                   "fix_state": r.get("fix_state", "")} for r in tri["cves"]])
+
+
 persona_label = st.radio(
     "Who are you? (or let the router decide)",
     ["Auto-detect", "Customer / Platform Owner", "Red Hat Support / TAM"],
@@ -158,6 +249,7 @@ if persona == "secondary":
     pick = st.selectbox("Customer account", labels, index=1 if accounts else 0)
     if pick != labels[0]:
         account = accounts[labels.index(pick) - 1]["account_name"]
+        render_triage(fetch_triage(account))
     msg = st.text_area(
         "What are you looking into for this customer?",
         placeholder="e.g. CVE-2024-1086 — which of their hosts are affected and what can "
@@ -219,6 +311,12 @@ def render_account(acc):
         st.caption("Not affected: " + ", ".join(h.get("hostname", "") for h in cv["not_affected"]))
     if cv.get("remediation_playbook"):
         st.caption(f"Insights remediation available: `{cv['remediation_playbook']}`")
+    comp = acc.get("compliance") or []
+    if comp:
+        st.markdown("**Compliance (Insights OpenSCAP)** — affected hosts")
+        st.table([{"host": r.get("hostname", ""), "profile": r.get("profile", ""),
+                   "score": f"{r.get('score','?')}%",
+                   "failing rules": ", ".join(r.get("failed_rules", [])) or "—"} for r in comp])
 
 
 def render_advice(intake, advice):
@@ -233,9 +331,16 @@ def render_advice(intake, advice):
         cols[0].metric("Fix state", vuln.get("fix_state", "?"))
         cols[1].metric("CVSS", vuln.get("cvss3") or "—")
         cols[2].metric("NDVM applies", "Yes" if vuln.get("ndvm_applies") else "No")
+        pr = advice.get("priority") or {}
+        pline = priority_line(pr)
+        if pline:
+            (st.error if pr.get("tier") == "act_now" else st.warning)(
+                f"{pline}\n\n{pr.get('rationale','')}")
         st.write(vuln.get("rationale", ""))
         if vuln.get("rhsa"):
             st.write(f"Fixing erratum: `{vuln['rhsa']}` → `{vuln.get('fixed_nvra','')}`")
+        for src in list(vuln.get("source_urls", [])) + (pr.get("source_urls", []) if pline else []):
+            st.caption(src_label(src))
 
     controls = advice.get("existing_controls", [])
     if controls:
@@ -248,7 +353,7 @@ def render_advice(intake, advice):
                             f"— {c.get('status','?').replace('_',' ')}")
                 st.write(c.get("rationale", ""))
                 for src in c.get("source_urls", []):
-                    st.caption(f"source: {src}")
+                    st.caption(src_label(src))
 
     risk = advice.get("business_risk")
     if risk:
@@ -271,7 +376,7 @@ def render_advice(intake, advice):
             if opt.get("steps"):
                 st.markdown("\n".join(f"- {s}" for s in opt["steps"]))
             for src in opt.get("source_urls", []):
-                st.caption(f"source: {src}")
+                st.caption(src_label(src))
 
     st.markdown("### Recommended approach")
     st.info(advice.get("explanation", ""))

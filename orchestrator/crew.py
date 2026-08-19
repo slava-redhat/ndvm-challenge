@@ -12,7 +12,9 @@ from accounts import (account_view, default_cve, detect_account, estate_as_answe
                       load_account)
 from cve_parse import ndvm_applies_for
 from llm import get_llm
-from models import AdviceResult, ControlReport, CveChoice, Intake, Sufficiency
+from models import (AdviceResult, ControlReport, CveChoice, ExploitSignal, Intake,
+                    Sufficiency)
+from priority import assess, classify, priority_note
 from tools import RagSearchTool, RedHatCveSearchTool, RedHatSecurityDataTool
 
 LLM = get_llm()
@@ -241,6 +243,10 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
     if not intake.cve.strip():
         intake = intake.model_copy(update={"cve": run_research(intake).cve})
 
+    # Prioritization facts (KEV + EPSS) — computed in Python, not LLM-guessed. Fed into
+    # the ranking/risk prompts as a note; the final signal is pinned onto the result below.
+    sig = assess(intake.cve)
+
     a = _analysis_agents()
     synth = _synth_agent(persona)
 
@@ -295,6 +301,9 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
             "Rank the retrieved candidates by disruption, effectiveness and effort for the "
             "constraint '{constraint}', weighing the customer's specific answers:\n"
             "---\n{answers}\n---\n"
+            "Exploitation urgency for this CVE: {priority_note} "
+            "If it is known-exploited or high-EPSS, favour the option that cuts exposure "
+            "FASTEST even at slightly higher effort. "
             "e.g. if they have no maintenance window soon, penalise anything needing a "
             "reboot; if the host is internet-facing, favour options that cut exposure now. "
             "Pick the recommended option and justify why the others rank lower FOR THIS case."
@@ -309,9 +318,10 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
     synthesize = Task(
         description=(
             f"{tone} Produce the final AdviceResult. Set persona='{persona}', "
-            "platform='{platform}'. Copy the vulnerability fields (cve_id, threat_severity, "
-            "cvss3, fix_state, ndvm_applies, rhsa, fixed_nvra, rationale, source_urls) "
-            "exactly from the analyst's tool output. Copy the validator's control "
+            "platform='{platform}'. The 'vulnerability' field MUST be a JSON OBJECT (never a "
+            "string, never '{{}}'), copied exactly from the analyst's tool output with all "
+            "fields: cve_id, threat_severity, cvss3, fix_state, ndvm_applies, rhsa, "
+            "fixed_nvra, rationale, source_urls. Copy the validator's control "
             "assessments verbatim into existing_controls (control, status, rationale, "
             "source_urls). If any existing control is 'mitigated', lead the explanation with "
             "the fact that the customer may already be protected. Write 'business_risk': 2-4 "
@@ -319,8 +329,10 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
             "happen in plain terms (no CVSS/CVE jargon), how exposed they are RIGHT NOW given "
             "the constraint '{constraint}' and any compensating controls above, and roughly "
             "how long that exposure lasts until they can patch. If a control fully mitigates, "
-            "say the residual business risk is low. Do not invent impact beyond the severity "
-            "and exposure established above. Fill options from the "
+            "say the residual business risk is low. Reflect the exploitation urgency in plain "
+            "terms — {priority_note} — e.g. 'attackers are already exploiting this' if "
+            "known-exploited. Do not invent impact beyond the severity, exposure and this "
+            "urgency established above. Fill options from the "
             "strategist's ranking, each with disruption, effectiveness (1-4), effort (1-4) "
             "and source_urls. Set recommended_title to the top option and write a clear "
             "explanation of the trade-offs. If the recommended option is automatable, put a "
@@ -339,11 +351,17 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
         verbose=False,
     )
     out = crew.kickoff(inputs={**intake.model_dump(), "persona": persona,
-                               "answers": answers or "none"})
+                               "answers": answers or "none",
+                               "priority_note": priority_note(sig)})
     result: AdviceResult = out.pydantic
     # ponytail: pin ndvm_applies from the authoritative fix_state so the synth LLM can't
     # flip it to False on a "Fixed" CVE the customer still can't reboot to apply.
     result.vulnerability.ndvm_applies = ndvm_applies_for(result.vulnerability.fix_state)
+    # Re-tier now the analyst has the real severity, then pin the KEV/EPSS signal in Python
+    # (never LLM-guessed) so the UI badge and ranking rest on the auditable feeds.
+    sig["tier"], sig["rationale"] = classify(sig["in_kev"], sig["epss"],
+                                             result.vulnerability.threat_severity)
+    result.priority = ExploitSignal(**sig)
     return result.model_dump()
 
 

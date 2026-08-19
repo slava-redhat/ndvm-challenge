@@ -52,6 +52,17 @@ class VulnFinding(BaseModel):
     source_urls: List[str] = []
 
 
+class ExploitSignal(BaseModel):
+    """Prioritization facts, computed in Python from public feeds (never LLM-guessed)."""
+    cve: str = ""
+    in_kev: bool = False                       # CISA Known Exploited Vulnerabilities catalog
+    epss: Optional[float] = None               # FIRST EPSS probability 0..1 (30-day exploit likelihood)
+    epss_percentile: Optional[float] = None
+    tier: Literal["act_now", "prioritize", "scheduled", "routine"] = "routine"
+    rationale: str = ""
+    source_urls: List[str] = []
+
+
 class ControlAssessment(BaseModel):
     """Does a control the customer ALREADY runs mitigate this specific CVE?"""
     control: str
@@ -81,6 +92,7 @@ class AdviceResult(BaseModel):
     platform: Platform
     environment_summary: str
     vulnerability: VulnFinding
+    priority: Optional[ExploitSignal] = None   # KEV/EPSS-driven urgency (set in Python)
     business_risk: str = ""            # plain-language risk for a non-technical decision-maker
     existing_controls: List[ControlAssessment] = []   # controls David already has
     options: List[MitigationOption]

@@ -76,16 +76,45 @@ def cve_view(account: dict, cve: str) -> dict | None:
     }
 
 
+def compliance_view(account: dict, hostnames=None) -> list[dict]:
+    """Insights Compliance (OpenSCAP) results, for the given hosts or all if None."""
+    comp = account.get("compliance") or {}
+    rows = []
+    for s in comp.get("systems", []):
+        if hostnames and s["hostname"] not in hostnames:
+            continue
+        rows.append({"hostname": s["hostname"], "profile": s.get("profile", ""),
+                     "score": s.get("score"), "failed_rules": s.get("failed_rules", []),
+                     "policy": comp.get("policy", "")})
+    return rows
+
+
 def default_cve(account: dict) -> str:
     """When the TAM names an account but no CVE: prefer a known-exploited affected CVE."""
     best = ""
     for cve, v in (account.get("insights_vulnerability") or {}).items():
-        if not v.get("affected_systems"):
+        if not isinstance(v, dict) or not v.get("affected_systems"):
             continue
         if v.get("known_exploited"):
             return cve
         best = best or cve
     return best
+
+
+def account_cves(account: dict) -> list[dict]:
+    """Every CVE Insights tracks for this account, with affected/exposure counts — the
+    raw list a batch triage ('respond at scale') ranks by KEV+EPSS."""
+    out = []
+    for cve, v in (account.get("insights_vulnerability") or {}).items():
+        if not isinstance(v, dict):
+            continue  # skip _comment / metadata keys
+        aff = v.get("affected_systems", [])
+        out.append({"cve": cve, "severity": v.get("severity", ""),
+                    "fix_state": v.get("red_hat_fix_state", ""),
+                    "known_exploited": v.get("known_exploited", False),
+                    "affected_count": len(aff),
+                    "internet_facing": sum(1 for h in aff if h.get("public_exposure"))})
+    return out
 
 
 def account_view(account: dict, cve: str) -> dict:
@@ -99,6 +128,9 @@ def account_view(account: dict, cve: str) -> dict:
         "estate_size": len(account.get("systems", [])),
         "maintenance": account.get("maintenance_policy", {}),
         "cve": cve_view(account, cve),
+        "compliance": compliance_view(
+            account, {h["hostname"] for h in (cve_view(account, cve) or {}).get("affected", [])}
+            or None),
     }
 
 
@@ -154,6 +186,16 @@ def estate_as_answers(account: dict, cve: str) -> str:
         lines.append("Exposure: " + ", ".join(sorted(exposure)) + ".")
     if backups:
         lines.append("Backups/DR: " + "; ".join(sorted(backups)) + ".")
+    # OpenSCAP compliance for the affected hosts — a failing rule (e.g.
+    # selinux_state_enforcing) is evidence a claimed control is NOT actually in force,
+    # and a low score is itself audit/regulatory risk in a regulated industry.
+    comp = compliance_view(account, aff_names or None)
+    if comp:
+        pol = (account.get("compliance") or {}).get("policy", "baseline")
+        lines.append(f"Compliance (Insights OpenSCAP, {pol}):")
+        for r in comp:
+            lines.append(f"  {r['hostname']}: {r['score']}% on {r['profile']}; "
+                         f"failing rules: {', '.join(r['failed_rules']) or 'none'}.")
     return "\n".join(lines)
 
 
@@ -168,4 +210,6 @@ if __name__ == "__main__":  # self-check against the shipped demo accounts
     assert cv and cv["affected"], "expected affected hosts"
     ans = estate_as_answers(a, "CVE-2023-3390")
     assert "Meridian" in ans and "internet-facing" in ans
+    assert "OpenSCAP" in ans or "Compliance" in ans, "compliance facts should reach the answers"
+    assert account_view(a, "CVE-2023-3390")["compliance"], "account_view should carry compliance"
     print("ok:", [x["account_name"] for x in accs])
