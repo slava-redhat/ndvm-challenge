@@ -40,6 +40,9 @@ services:
         condition: service_healthy
     extra_hosts:
       - "host.containers.internal:host-gateway"   # reach host Ollama (GPU)
+    # Rootless podman maps your host UID -> container root; keep-id maps it to the
+    # non-root 'app' user (uid 1000) so it can read the 0600 ADC credential below.
+    userns_mode: "keep-id:uid=1000,gid=1000"
     ports:
       - "8000:8000"
     volumes:
