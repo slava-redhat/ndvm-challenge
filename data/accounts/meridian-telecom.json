@@ -1,0 +1,209 @@
+{
+  "_comment": "SYNTHETIC demo data. Fictional customer account modelled on the Red Hat Hybrid Cloud Console (Insights Inventory + Vulnerability + Compliance) — the kind of view a Red Hat TAM sees for a customer. No real hosts, accounts, or credentials. Used to show account-grounded, personalized NDVM advice instead of asking the customer to describe their estate.",
+
+  "account": {
+    "org_id": "6045321",
+    "account_name": "Meridian Telecom Group",
+    "industry": "Telecommunications",
+    "segment": "Strategic / Large Enterprise",
+    "primary_contact": {
+      "name": "David Okafor",
+      "role": "Critical Platform Owner — Core Network Services",
+      "email": "david.okafor@meridiantelecom.example"
+    },
+    "assigned_tam": "R. Chen (Red Hat TAM, Telco vertical)",
+    "support_level": "Premium",
+    "subscriptions": [
+      {"sku": "RH00003", "name": "Red Hat Enterprise Linux Server, Premium", "quantity": 480, "active": true},
+      {"sku": "MCT3718", "name": "Red Hat Smart Management (Satellite)", "quantity": 480, "active": true},
+      {"sku": "RH00011", "name": "RHEL Extended Update Support (EUS)", "quantity": 120, "active": true},
+      {"sku": "MW01484", "name": "Red Hat Ansible Automation Platform", "quantity": 50, "active": true}
+    ],
+    "insights_registered_systems": 486,
+    "satellite_managed": true
+  },
+
+  "maintenance_policy": {
+    "change_freeze": "Active until quarter-end (regulatory reporting period)",
+    "next_reboot_window": "2026-09-30",
+    "weeks_until_window": 6,
+    "emergency_change_process": "CAB approval required; only P1 exploited-in-the-wild qualifies",
+    "notes": "Core network hosts carry a 99.999% availability SLA; unplanned reboots breach the customer carrier contracts."
+  },
+
+  "systems": [
+    {
+      "hostname": "core-sbc-01.mtn.meridiantelecom.example",
+      "display_name": "Session Border Controller 01",
+      "role": "Core network — SBC (signalling)",
+      "criticality": "mission_critical",
+      "rhel_version": "8.8",
+      "eus": true,
+      "running_kernel": "kernel-4.18.0-477.15.1.el8_8.x86_64",
+      "last_reboot": "2026-05-12T02:14:00Z",
+      "uptime_days": 99,
+      "last_checkin": "2026-08-19T09:41:00Z",
+      "network_zone": "internet-facing (SIP trunk peering)",
+      "public_exposure": true,
+      "controls": {
+        "selinux": "enforcing",
+        "firewalld": "active",
+        "fips_mode": true,
+        "idm_enrolled": true
+      },
+      "backup": {"type": "snapshot", "frequency": "nightly", "dr_replicated": true},
+      "tags": ["core", "sbc", "pci-adjacent", "carrier-sla"]
+    },
+    {
+      "hostname": "core-sbc-02.mtn.meridiantelecom.example",
+      "display_name": "Session Border Controller 02",
+      "role": "Core network — SBC (signalling)",
+      "criticality": "mission_critical",
+      "rhel_version": "8.8",
+      "eus": true,
+      "running_kernel": "kernel-4.18.0-477.15.1.el8_8.x86_64",
+      "last_reboot": "2026-05-12T02:47:00Z",
+      "uptime_days": 99,
+      "last_checkin": "2026-08-19T09:40:00Z",
+      "network_zone": "internet-facing (SIP trunk peering)",
+      "public_exposure": true,
+      "controls": {
+        "selinux": "enforcing",
+        "firewalld": "active",
+        "fips_mode": true,
+        "idm_enrolled": true
+      },
+      "backup": {"type": "snapshot", "frequency": "nightly", "dr_replicated": true},
+      "tags": ["core", "sbc", "pci-adjacent", "carrier-sla"]
+    },
+    {
+      "hostname": "prov-api-01.mtn.meridiantelecom.example",
+      "display_name": "Subscriber Provisioning API 01",
+      "role": "OSS/BSS — provisioning API",
+      "criticality": "high",
+      "rhel_version": "9.2",
+      "eus": false,
+      "running_kernel": "kernel-5.14.0-284.11.1.el9_2.x86_64",
+      "last_reboot": "2026-07-30T22:05:00Z",
+      "uptime_days": 20,
+      "last_checkin": "2026-08-19T09:38:00Z",
+      "network_zone": "internal (behind API gateway)",
+      "public_exposure": false,
+      "controls": {
+        "selinux": "enforcing",
+        "firewalld": "active",
+        "fips_mode": false,
+        "idm_enrolled": true
+      },
+      "backup": {"type": "snapshot", "frequency": "nightly", "dr_replicated": true},
+      "tags": ["oss-bss", "provisioning"]
+    },
+    {
+      "hostname": "billing-db-01.mtn.meridiantelecom.example",
+      "display_name": "Billing Mediation DB 01",
+      "role": "OSS/BSS — billing mediation database",
+      "criticality": "high",
+      "rhel_version": "8.8",
+      "eus": true,
+      "running_kernel": "kernel-4.18.0-477.27.1.el8_8.x86_64",
+      "last_reboot": "2026-08-14T01:10:00Z",
+      "uptime_days": 5,
+      "last_checkin": "2026-08-19T09:39:00Z",
+      "network_zone": "internal (segmented VLAN, no egress)",
+      "public_exposure": false,
+      "controls": {
+        "selinux": "enforcing",
+        "firewalld": "active",
+        "fips_mode": true,
+        "idm_enrolled": true
+      },
+      "backup": {"type": "snapshot+offsite", "frequency": "hourly", "dr_replicated": true},
+      "tags": ["oss-bss", "billing", "pci"]
+    },
+    {
+      "hostname": "edge-lb-03.mtn.meridiantelecom.example",
+      "display_name": "Edge Load Balancer 03",
+      "role": "Edge — customer-facing load balancer",
+      "criticality": "high",
+      "rhel_version": "8.8",
+      "eus": true,
+      "running_kernel": "kernel-4.18.0-477.15.1.el8_8.x86_64",
+      "last_reboot": "2026-05-12T03:22:00Z",
+      "uptime_days": 99,
+      "last_checkin": "2026-08-19T09:42:00Z",
+      "network_zone": "internet-facing (public VIP)",
+      "public_exposure": true,
+      "controls": {
+        "selinux": "enforcing",
+        "firewalld": "active",
+        "fips_mode": false,
+        "idm_enrolled": true
+      },
+      "backup": {"type": "snapshot", "frequency": "nightly", "dr_replicated": false},
+      "tags": ["edge", "load-balancer", "carrier-sla"]
+    }
+  ],
+
+  "insights_vulnerability": {
+    "_comment": "Insights Vulnerability service view: for each CVE, which registered systems are actually affected, and their remediation state.",
+    "CVE-2023-3390": {
+      "synopsis": "kernel: netfilter/nf_tables use-after-free",
+      "severity": "Important",
+      "cvss3": 7.8,
+      "red_hat_fix_state": "Fixed",
+      "fixing_advisory": "RHSA-2023:5255",
+      "fixed_nvra": "kernel-0:4.18.0-477.27.1.el8_8",
+      "known_exploited": false,
+      "affected_systems": [
+        {"hostname": "core-sbc-01.mtn.meridiantelecom.example", "status": "affected", "reason": "running_kernel below fixed NVRA; reboot required to apply", "public_exposure": true},
+        {"hostname": "core-sbc-02.mtn.meridiantelecom.example", "status": "affected", "reason": "running_kernel below fixed NVRA; reboot required to apply", "public_exposure": true},
+        {"hostname": "edge-lb-03.mtn.meridiantelecom.example", "status": "affected", "reason": "running_kernel below fixed NVRA; reboot required to apply", "public_exposure": true},
+        {"hostname": "billing-db-01.mtn.meridiantelecom.example", "status": "patched_not_rebooted", "reason": "fixed kernel installed but running kernel is old; reboot pending", "public_exposure": false}
+      ],
+      "systems_not_affected": [
+        {"hostname": "prov-api-01.mtn.meridiantelecom.example", "reason": "RHEL 9.2 running kernel already at or above fixed level"}
+      ],
+      "remediation_available": true,
+      "remediation_playbook": "insights-remediation-CVE-2023-3390.yml (kpatch apply, no reboot)"
+    },
+    "CVE-2024-1086": {
+      "synopsis": "kernel: netfilter nf_tables use-after-free (nft_verdict)",
+      "severity": "Important",
+      "cvss3": 7.8,
+      "red_hat_fix_state": "Fixed",
+      "fixing_advisory": "RHSA-2024:2394",
+      "known_exploited": true,
+      "affected_systems": [
+        {"hostname": "core-sbc-01.mtn.meridiantelecom.example", "status": "affected", "reason": "reboot required", "public_exposure": true},
+        {"hostname": "core-sbc-02.mtn.meridiantelecom.example", "status": "affected", "reason": "reboot required", "public_exposure": true}
+      ],
+      "systems_not_affected": [],
+      "remediation_available": true,
+      "remediation_playbook": "insights-remediation-CVE-2024-1086.yml (kpatch + module blacklist)"
+    },
+    "CVE-2024-3094": {
+      "synopsis": "xz/liblzma: malicious backdoor in upstream source (sshd)",
+      "severity": "Critical",
+      "cvss3": 10.0,
+      "red_hat_fix_state": "Not affected",
+      "fixing_advisory": null,
+      "known_exploited": false,
+      "affected_systems": [],
+      "systems_not_affected": [
+        {"hostname": "core-sbc-01.mtn.meridiantelecom.example", "reason": "shipped xz version predates the backdoored 5.6.0/5.6.1 — Red Hat marks RHEL not affected (VEX known_not_affected)"}
+      ],
+      "remediation_available": false,
+      "remediation_playbook": null
+    }
+  },
+
+  "compliance": {
+    "_comment": "Insights Compliance (OpenSCAP) view.",
+    "policy": "ANSSI-BP-028 (Enhanced) + internal telco baseline",
+    "systems": [
+      {"hostname": "core-sbc-01.mtn.meridiantelecom.example", "profile": "anssi_bp28_enhanced", "score": 91.4, "failed_rules": ["package_aide_installed", "kernel_module_dccp_disabled"]},
+      {"hostname": "billing-db-01.mtn.meridiantelecom.example", "profile": "pci-dss", "score": 96.2, "failed_rules": ["audit_rules_privileged_commands"]},
+      {"hostname": "edge-lb-03.mtn.meridiantelecom.example", "profile": "anssi_bp28_enhanced", "score": 88.0, "failed_rules": ["package_aide_installed", "sysctl_net_ipv4_conf_all_accept_redirects"]}
+    ]
+  }
+}
