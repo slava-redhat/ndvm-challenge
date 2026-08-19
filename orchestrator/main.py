@@ -11,6 +11,8 @@ app = FastAPI(title="NDVM Orchestrator")
 class AdviseReq(BaseModel):
     message: str
     persona: str | None = None  # "primary" | "secondary" | None (let the router decide)
+    answers: str | None = None  # tick-box answers gathered from the sufficiency gate
+    force: bool = False         # skip the gate (client ran out of question rounds)
 
 
 @app.get("/health")
@@ -20,7 +22,7 @@ def health():
 
 @app.post("/advise")
 def advise_ep(req: AdviseReq):
-    result = advise(req.message, req.persona or "")
+    result = advise(req.message, req.persona or "", req.answers or "", req.force)
     if result.get("advice"):
         try:
             save_recommendation(result["advice"])

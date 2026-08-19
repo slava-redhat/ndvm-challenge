@@ -16,6 +16,21 @@ class Intake(BaseModel):
     constraint: str = Field(default="", description="the hard constraint, e.g. 'no reboot until quarter-end'")
 
 
+class ClarifyQuestion(BaseModel):
+    """One LLM-generated, tick-box question the judge needs answered before advising."""
+    key: str = Field(description="short stable id, e.g. 'maintenance_window'")
+    question: str
+    options: List[str] = Field(description="2-5 concrete answer choices the user can tick")
+    multi: bool = True   # checkboxes: more than one answer may apply
+
+
+class Sufficiency(BaseModel):
+    """The gatekeeper's verdict: is the case understood well enough to advise?"""
+    sufficient: bool = Field(description="True only when advice would fit THIS environment, no wide guessing")
+    missing: List[str] = Field(default=[], description="what is still unknown")
+    questions: List[ClarifyQuestion] = []   # populated only when not sufficient
+
+
 class VulnFinding(BaseModel):
     cve_id: str
     threat_severity: str = "unknown"

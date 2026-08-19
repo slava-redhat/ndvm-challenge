@@ -9,7 +9,7 @@ from crewai.flow.flow import Flow, listen, router, start
 from pydantic import BaseModel
 
 from llm import get_llm
-from models import AdviceResult, Intake
+from models import AdviceResult, Intake, Sufficiency
 from tools import RagSearchTool, RedHatCveSearchTool, RedHatSecurityDataTool
 
 LLM = get_llm()
@@ -140,9 +140,60 @@ def run_router(message: str, forced_persona: str = "") -> Intake:
     return intake
 
 
+# ---- Sufficiency gate (runs before any advice) -------------------------------
+
+def _gate_agent() -> Agent:
+    return Agent(
+        role="Environment Sufficiency Judge",
+        goal=("Refuse to advise until this customer's specific environment is understood; "
+              "otherwise ask a few precise tick-box questions."),
+        backstory=(
+            "You are a meticulous Red Hat TAM lead who has watched bad advice come from "
+            "guessing. Before anyone proposes a mitigation you insist on knowing the REAL "
+            "case: how the CVE surfaced (which scanner / Insights / audit), the exact "
+            "affected component and version, how the system is exposed (internet-facing, "
+            "internal, air-gapped), whether backups / snapshots / DR exist, and the true "
+            "maintenance-window timing. You never pad with generic questions — every "
+            "question you ask would actually change the recommendation. You do NOT suggest "
+            "upgrading or mitigating a CVE until the picture fits."
+        ),
+        llm=LLM, verbose=False,
+    )
+
+
+def run_gate(message: str, intake: Intake, answers: str = "") -> Sufficiency:
+    agent = _gate_agent()
+    task = Task(
+        description=(
+            "You are the guardrail BEFORE any mitigation advice. Decide whether you "
+            "understand THIS customer's situation well enough to give environment-fit, "
+            "non-disruptive advice WITHOUT wide guessing.\n"
+            "Customer message:\n---\n{message}\n---\n"
+            "Structured so far: platform={platform}, product='{product}', version='{version}', "
+            "cve='{cve}', constraint='{constraint}'.\n"
+            "Answers already gathered from earlier questions (may say 'none'):\n---\n{answers}\n---\n"
+            "Judge like a TAM: do you know where/how the vuln was detected, the exact "
+            "affected component+version, the exposure, whether backups/DR exist, and the "
+            "real maintenance window? If key pieces are missing, you are NOT sufficient.\n"
+            "If NOT sufficient: set sufficient=false and generate up to 5 crisp questions, "
+            "each with 2-5 concrete tick-box options tailored to THIS case (never generic "
+            "filler). Only ask what would change the recommendation, and do not re-ask "
+            "anything already answered above.\n"
+            "If the picture is clear enough, set sufficient=true and leave questions empty."
+        ),
+        expected_output="A Sufficiency object.",
+        agent=agent,
+        output_pydantic=Sufficiency,
+    )
+    crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=False)
+    out = crew.kickoff(inputs={**intake.model_dump(), "message": message,
+                               "answers": answers or "none"})
+    return out.pydantic
+
+
 # ---- Advice crew (shared analysis + persona synthesizer) ---------------------
 
-def run_advice(intake: Intake, persona: str) -> dict:
+def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
     a = _analysis_agents()
     synth = _synth_agent(persona)
 
@@ -150,7 +201,9 @@ def run_advice(intake: Intake, persona: str) -> dict:
         description=(
             "Summarize the environment: platform={platform}, product='{product}', "
             "version='{version}'. State the hard constraint that blocks patching: "
-            "'{constraint}'."
+            "'{constraint}'. Fold in these specific customer answers from the intake "
+            "questionnaire (may say 'none'):\n---\n{answers}\n---\n"
+            "Reflect exposure, backups/DR and the real maintenance window if given."
         ),
         expected_output="A one-paragraph environment summary.",
         agent=a["profiler"],
@@ -189,8 +242,11 @@ def run_advice(intake: Intake, persona: str) -> dict:
     strategize = Task(
         description=(
             "Rank the retrieved candidates by disruption, effectiveness and effort for the "
-            "constraint '{constraint}'. Pick the recommended option and justify why the "
-            "others rank lower."
+            "constraint '{constraint}', weighing the customer's specific answers:\n"
+            "---\n{answers}\n---\n"
+            "e.g. if they have no maintenance window soon, penalise anything needing a "
+            "reboot; if the host is internet-facing, favour options that cut exposure now. "
+            "Pick the recommended option and justify why the others rank lower FOR THIS case."
         ),
         expected_output="A ranked shortlist with a recommended option and rationale.",
         agent=a["strategist"],
@@ -222,7 +278,8 @@ def run_advice(intake: Intake, persona: str) -> dict:
         process=Process.sequential,
         verbose=False,
     )
-    out = crew.kickoff(inputs={**intake.model_dump(), "persona": persona})
+    out = crew.kickoff(inputs={**intake.model_dump(), "persona": persona,
+                               "answers": answers or "none"})
     return out.pydantic.model_dump()
 
 
@@ -231,7 +288,10 @@ def run_advice(intake: Intake, persona: str) -> dict:
 class NDVMState(BaseModel):
     message: str = ""
     forced_persona: str = ""
+    answers: str = ""
+    force: bool = False          # skip the gate (e.g. after enough question rounds)
     intake: Intake | None = None
+    gate: Sufficiency | None = None
     result: dict | None = None
 
 
@@ -239,21 +299,37 @@ class NDVMFlow(Flow[NDVMState]):
     @start()
     def triage(self):
         self.state.intake = run_router(self.state.message, self.state.forced_persona)
+        self.state.gate = (Sufficiency(sufficient=True) if self.state.force
+                           else run_gate(self.state.message, self.state.intake,
+                                         self.state.answers))
 
     @router(triage)
     def route(self):
+        if not self.state.gate.sufficient:
+            return "need_info"          # withhold advice, ask the customer first
         return self.state.intake.persona  # "primary" | "secondary"
+
+    @listen("need_info")
+    def ask(self):
+        self.state.result = None        # questions travel in state.gate
 
     @listen("primary")
     def primary_flow(self):
-        self.state.result = run_advice(self.state.intake, "primary")
+        self.state.result = run_advice(self.state.intake, "primary", self.state.answers)
 
     @listen("secondary")
     def secondary_flow(self):
-        self.state.result = run_advice(self.state.intake, "secondary")
+        self.state.result = run_advice(self.state.intake, "secondary", self.state.answers)
 
 
-def advise(message: str, forced_persona: str = "") -> dict:
+def advise(message: str, forced_persona: str = "", answers: str = "",
+           force: bool = False) -> dict:
     flow = NDVMFlow()
-    flow.kickoff(inputs={"message": message, "forced_persona": forced_persona})
-    return {"intake": flow.state.intake.model_dump(), "advice": flow.state.result}
+    flow.kickoff(inputs={"message": message, "forced_persona": forced_persona,
+                         "answers": answers, "force": force})
+    s = flow.state
+    if not s.gate.sufficient:
+        return {"intake": s.intake.model_dump(), "status": "need_info", "advice": None,
+                "missing": s.gate.missing,
+                "questions": [q.model_dump() for q in s.gate.questions]}
+    return {"intake": s.intake.model_dump(), "status": "ok", "advice": s.result}
