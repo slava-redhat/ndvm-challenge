@@ -13,6 +13,12 @@ CREATE INDEX IF NOT EXISTS doc_chunk_embedding_idx
     ON doc_chunk USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS doc_chunk_platform_idx
     ON doc_chunk ((metadata->>'platform'));
+-- Lexical half of hybrid retrieval: a generated tsvector (auto-fills for existing
+-- and future rows) so exact tokens (CVE ids, kpatch, NetworkPolicy) that dense
+-- embeddings bury are still findable. Fused with the vector score via RRF in db.py.
+ALTER TABLE doc_chunk ADD COLUMN IF NOT EXISTS tsv tsvector
+    GENERATED ALWAYS AS (to_tsvector('english', text)) STORED;
+CREATE INDEX IF NOT EXISTS doc_chunk_tsv_idx ON doc_chunk USING GIN (tsv);
 
 -- Per-platform mitigation catalog (data-driven; "general" = add rows).
 CREATE TABLE IF NOT EXISTS mitigation (

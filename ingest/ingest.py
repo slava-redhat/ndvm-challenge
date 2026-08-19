@@ -49,6 +49,11 @@ def ensure_schema(cur):
         " source TEXT PRIMARY KEY, kind TEXT NOT NULL, sha256 TEXT NOT NULL,"
         " chunks INT NOT NULL DEFAULT 0, ingested_at TIMESTAMPTZ DEFAULT now())"
     )
+    # Lexical half of hybrid retrieval (see db.rag_search_hybrid). Idempotent so
+    # already-provisioned pgdata volumes gain the column without a full re-init.
+    cur.execute("ALTER TABLE doc_chunk ADD COLUMN IF NOT EXISTS tsv tsvector "
+                "GENERATED ALWAYS AS (to_tsvector('english', text)) STORED")
+    cur.execute("CREATE INDEX IF NOT EXISTS doc_chunk_tsv_idx ON doc_chunk USING GIN (tsv)")
 
 
 def seen(cur, source, digest) -> bool:

@@ -7,7 +7,7 @@ from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
 from cve_parse import analyze_cve_json, search_params, slim_rows
-from db import rag_search
+from db import rag_search_hybrid
 
 SECDATA = "https://access.redhat.com/hydra/rest/securitydata/cve/{cve}.json"
 CVE_LIST = "https://access.redhat.com/hydra/rest/securitydata/cve.json"
@@ -94,7 +94,7 @@ class RagSearchTool(BaseTool):
     args_schema: Type[BaseModel] = RagInput
 
     def _run(self, query: str, platform: str = "") -> str:
-        hits = rag_search(query, platform or None)
+        hits = rag_search_hybrid(query, platform or None)
         if not hits:
             return "No grounded mitigations found in the knowledge base."
         return "\n\n".join(
