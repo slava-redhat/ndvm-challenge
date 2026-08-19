@@ -6,10 +6,11 @@ import requests
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
-from cve_parse import analyze_cve_json
+from cve_parse import analyze_cve_json, search_params, slim_rows
 from db import rag_search
 
 SECDATA = "https://access.redhat.com/hydra/rest/securitydata/cve/{cve}.json"
+CVE_LIST = "https://access.redhat.com/hydra/rest/securitydata/cve.json"
 
 
 class SecDataInput(BaseModel):
@@ -37,6 +38,44 @@ class RedHatSecurityDataTool(BaseTool):
             return json.dumps({"error": "CVE not found in Red Hat data", "cve_id": cve})
         r.raise_for_status()
         return json.dumps(analyze_cve_json(r.json(), product))
+
+
+class CveSearchInput(BaseModel):
+    package: str = Field(default="", description="affected package name, e.g. 'openssl' or 'kernel'")
+    product: str = Field(default="", description="product name substring, e.g. 'Red Hat Enterprise Linux 8'")
+    severity: str = Field(default="", description="low | moderate | important | critical")
+    advisory: str = Field(default="", description="RHSA id to list the CVEs it fixes, e.g. RHSA-2024:2394")
+    after: str = Field(default="", description="only CVEs public on/after this date, YYYY-MM-DD")
+
+
+class RedHatCveSearchTool(BaseTool):
+    name: str = "redhat_cve_search"
+    description: str = (
+        "Search Red Hat's authoritative CVE catalog — the same public data behind "
+        "access.redhat.com/security/security-updates/cve and .../security-advisories "
+        "(no login needed). Filter by package, product, severity, publish date, or an "
+        "RHSA advisory id. Use this to DISCOVER which CVEs affect a customer's software "
+        "when they don't name a specific CVE, or to list the CVEs an advisory fixes. "
+        "Returns a list (newest first): cve, severity, date, cvss3, advisories, affected "
+        "packages, summary, url. Give at least one filter."
+    )
+    args_schema: Type[BaseModel] = CveSearchInput
+
+    def _run(self, package: str = "", product: str = "", severity: str = "",
+             advisory: str = "", after: str = "") -> str:
+        try:
+            params = search_params(package, product, severity, advisory, after)
+        except ValueError as e:
+            return json.dumps({"error": str(e)})
+        try:
+            r = requests.get(CVE_LIST, params=params, timeout=30)
+            r.raise_for_status()
+            rows = r.json()
+        except (requests.RequestException, ValueError) as e:
+            return json.dumps({"error": f"search failed: {e}"})
+        if not rows:
+            return json.dumps({"results": [], "note": "no matching CVEs"})
+        return json.dumps({"results": slim_rows(rows)})
 
 
 class RagInput(BaseModel):

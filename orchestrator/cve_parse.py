@@ -3,9 +3,36 @@
 Trust rule: fix_state is read from Red Hat's data, never inferred by an LLM.
 """
 CVE_PAGE = "https://access.redhat.com/security/cve/{cve}"
+SEARCH_PER_PAGE = 10  # ponytail: cap rows — enough for triage, keeps LLM tokens sane
 
 # fix_state values that mean "no vendor fix is coming (soon)" -> NDVM is the point.
 NO_FIX_STATES = {"Fix deferred", "Will not fix", "Out of support scope", "Affected"}
+
+
+def search_params(package="", product="", severity="", advisory="", after="") -> dict:
+    """Build the cve.json search query from non-empty filters (raises if none given)."""
+    params = {"per_page": SEARCH_PER_PAGE}
+    for k, v in (("package", package), ("product", product), ("severity", severity),
+                 ("advisory", advisory), ("after", after)):
+        if v and v.strip():
+            params[k] = v.strip()
+    if len(params) == 1:
+        raise ValueError("provide at least one filter (package/product/severity/advisory/after)")
+    return params
+
+
+def slim_rows(rows: list) -> list:
+    """Reduce cve.json search rows to the fields the agent needs; cap package lists."""
+    return [{
+        "cve": x.get("CVE"),
+        "severity": x.get("severity"),
+        "public_date": x.get("public_date"),
+        "cvss3": x.get("cvss3_score"),
+        "advisories": x.get("advisories") or [],
+        "affected_packages": (x.get("affected_packages") or [])[:5],
+        "summary": x.get("bugzilla_description"),
+        "url": x.get("resource_url"),
+    } for x in rows]
 
 
 def _match(product_name: str, hint: str) -> bool:

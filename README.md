@@ -13,9 +13,15 @@ A **router** agent classifies the user (Primary customer vs Secondary Red Hat TA
 and scopes the situation, then routes to a crew:
 
 ```
-Router ─▶ Environment Profiler ─▶ Vulnerability Analyst ─▶ Mitigation Retriever ─▶ Strategist ─▶ Advisor / TAM Briefer
-                                   (Red Hat Security Data)   (local RAG, pgvector)     (ranking)   (persona-specific)
+Router ─▶ Profiler ─▶ CVE Researcher ─▶ Vulnerability Analyst ─▶ Mitigation Retriever ─▶ Strategist ─▶ Advisor / TAM Briefer
+                      (RH CVE catalog)    (RH Security Data)       (local RAG, pgvector)    (ranking)   (persona-specific)
 ```
+
+The **CVE Researcher** searches Red Hat's public CVE catalog (the data behind
+`access.redhat.com/security/security-updates`) by package / product / severity / date,
+or pivots an RHSA advisory to its CVEs — so a customer who names *software* but no CVE
+still gets grounded findings. No login required (that catalog is public; your Red Hat
+account only matters for per-system Insights data, which is out of scope here).
 
 Trust comes from Red Hat's own data: the Analyst reads each CVE's **`fix_state`**
 (`Fix deferred` / `Will not fix` = "patching isn't feasible", the NDVM trigger) and

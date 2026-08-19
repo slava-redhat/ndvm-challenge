@@ -10,10 +10,11 @@ from pydantic import BaseModel
 
 from llm import get_llm
 from models import AdviceResult, Intake
-from tools import RagSearchTool, RedHatSecurityDataTool
+from tools import RagSearchTool, RedHatCveSearchTool, RedHatSecurityDataTool
 
 LLM = get_llm()
 SEC_TOOL = RedHatSecurityDataTool()
+SEARCH_TOOL = RedHatCveSearchTool()
 RAG_TOOL = RagSearchTool()
 
 
@@ -45,6 +46,17 @@ def _analysis_agents() -> dict[str, Agent]:
         ),
         llm=LLM, verbose=False,
     )
+    researcher = Agent(
+        role="Red Hat CVE Researcher",
+        goal="Discover which CVEs actually affect the customer's software and surface the ones that matter.",
+        backstory=(
+            "You comb Red Hat's CVE catalog the way a security analyst does — by package, "
+            "product, severity and date. When a customer names software but not a CVE, or "
+            "asks 'what should I worry about', you find the relevant CVEs and their "
+            "advisories from Red Hat's own public data, never from memory."
+        ),
+        tools=[SEARCH_TOOL], llm=LLM, verbose=False,
+    )
     analyst = Agent(
         role="Red Hat Vulnerability Analyst",
         goal="State the authoritative truth about a CVE for this product, with citations.",
@@ -75,7 +87,7 @@ def _analysis_agents() -> dict[str, Agent]:
         ),
         llm=LLM, verbose=False,
     )
-    return {"profiler": profiler, "analyst": analyst,
+    return {"profiler": profiler, "researcher": researcher, "analyst": analyst,
             "retriever": retriever, "strategist": strategist}
 
 
@@ -143,14 +155,27 @@ def run_advice(intake: Intake, persona: str) -> dict:
         expected_output="A one-paragraph environment summary.",
         agent=a["profiler"],
     )
+    research = Task(
+        description=(
+            "If a specific CVE ('{cve}') is already given, pass it straight through as the "
+            "CVE to analyze — do not search. Otherwise use redhat_cve_search to find the "
+            "CVEs affecting product '{product}' / platform '{platform}' (filter by the "
+            "package or product; prefer 'critical' and 'important' severity). Choose the "
+            "single most relevant CVE to analyze next and note a few other notable ones."
+        ),
+        expected_output="The CVE id to analyze next, plus a short list of other notable CVEs (id + severity).",
+        agent=a["researcher"],
+    )
     analyze = Task(
         description=(
-            "Use the redhat_security_data tool to look up {cve} for product '{product}'. "
-            "Report fix_state, severity, CVSS, fixing RHSA/NVRA if any, whether NDVM "
-            "applies, and the source URL. Use ONLY the tool's output."
+            "Look up the CVE chosen by the researcher (or '{cve}' if it was given) for "
+            "product '{product}' using the redhat_security_data tool. Report fix_state, "
+            "severity, CVSS, fixing RHSA/NVRA if any, whether NDVM applies, and the source "
+            "URL. Use ONLY the tool's output."
         ),
         expected_output="The CVE finding with fix_state and source URL.",
         agent=a["analyst"],
+        context=[research],
     )
     retrieve = Task(
         description=(
@@ -191,8 +216,9 @@ def run_advice(intake: Intake, persona: str) -> dict:
         output_pydantic=AdviceResult,
     )
     crew = Crew(
-        agents=[a["profiler"], a["analyst"], a["retriever"], a["strategist"], synth],
-        tasks=[profile, analyze, retrieve, strategize, synthesize],
+        agents=[a["profiler"], a["researcher"], a["analyst"], a["retriever"],
+                a["strategist"], synth],
+        tasks=[profile, research, analyze, retrieve, strategize, synthesize],
         process=Process.sequential,
         verbose=False,
     )
