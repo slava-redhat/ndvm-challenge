@@ -5,6 +5,7 @@ import streamlit as st
 
 ORCH = os.environ.get("ORCHESTRATOR_URL", "http://localhost:8000")
 DISRUPTION_COLOR = {"none": "🟢", "low": "🟢", "medium": "🟠", "high": "🔴"}
+CONTROL_ICON = {"mitigated": "✅", "partial": "🟡", "not_mitigated": "❌", "unknown": "⚪"}
 
 
 def dots(n: int) -> str:
@@ -30,6 +31,15 @@ def report_md(intake: dict, advice: dict) -> str:
     if v.get("rationale"):
         out.append("\n" + v["rationale"])
     out += [f"- source: {s}" for s in v.get("source_urls", [])]
+    controls = advice.get("existing_controls", [])
+    if controls:
+        out.append("\n## Controls you already have")
+        for c in controls:
+            out.append(f"- **{c.get('control','')}** — {c.get('status','?').replace('_',' ')}"
+                       + (f": {c['rationale']}" if c.get("rationale") else ""))
+            out += [f"  - source: {s}" for s in c.get("source_urls", [])]
+    if advice.get("business_risk"):
+        out += ["\n## What this means for your business", advice["business_risk"]]
     out.append("\n## Mitigation options (ranked)")
     for o in advice.get("options", []):
         star = " ⭐ **RECOMMENDED**" if o.get("title") == rec else ""
@@ -49,19 +59,26 @@ def report_md(intake: dict, advice: dict) -> str:
 def report_pdf(intake: dict, advice: dict) -> bytes:
     """Same content as a simple PDF. Core fonts are latin-1, so strip non-latin glyphs."""
     from fpdf import FPDF
+    from fpdf.enums import XPos, YPos
     def a(s):  # ponytail: drop emoji/bullets rather than ship a TTF; content stays intact
         return (str(s) if s is not None else "").encode("latin-1", "ignore").decode("latin-1")
     v = advice.get("vulnerability", {})
     rec = advice.get("recommended_title")
     pdf = FPDF()
+    pdf.set_margins(15, 15, 15)
     pdf.set_auto_page_break(True, 15)
     pdf.add_page()
 
+    # wrapmode=CHAR breaks long unbreakable tokens (source URLs) instead of crashing;
+    # new_x/new_y reset to the left margin so the next block gets the full page width.
     def h(txt, size=13):
-        pdf.set_font("Helvetica", "B", size); pdf.multi_cell(0, 7, a(txt)); pdf.ln(1)
+        pdf.set_font("Helvetica", "B", size)
+        pdf.multi_cell(0, 7, a(txt), new_x=XPos.LMARGIN, new_y=YPos.NEXT, wrapmode="CHAR")
+        pdf.ln(1)
 
     def p(txt):
-        pdf.set_font("Helvetica", "", 10); pdf.multi_cell(0, 5, a(txt))
+        pdf.set_font("Helvetica", "", 10)
+        pdf.multi_cell(0, 5, a(txt), new_x=XPos.LMARGIN, new_y=YPos.NEXT, wrapmode="CHAR")
 
     h(f"NDVM Analysis - {v.get('cve_id','CVE')} ({v.get('threat_severity','?')})", 16)
     flow = "Customer" if advice.get("persona") == "primary" else "Red Hat TAM"
@@ -78,6 +95,15 @@ def report_pdf(intake: dict, advice: dict) -> bytes:
         p(v["rationale"])
     for s in v.get("source_urls", []):
         p(f"source: {s}")
+    controls = advice.get("existing_controls", [])
+    if controls:
+        pdf.ln(1); h("Controls you already have")
+        for c in controls:
+            p(f"[{c.get('status','?').replace('_',' ')}] {c.get('control','')}: {c.get('rationale','')}")
+            for s in c.get("source_urls", []):
+                p(f"  source: {s}")
+    if advice.get("business_risk"):
+        pdf.ln(1); h("What this means for your business"); p(advice["business_risk"])
     pdf.ln(1); h("Mitigation options (ranked)")
     for o in advice.get("options", []):
         star = "  [RECOMMENDED]" if o.get("title") == rec else ""
@@ -92,7 +118,8 @@ def report_pdf(intake: dict, advice: dict) -> bytes:
             p(f"  source: {s}")
     pdf.ln(1); h("Recommended approach"); p(advice.get("explanation", ""))
     if advice.get("playbook"):
-        h("Playbook"); pdf.set_font("Courier", "", 8); pdf.multi_cell(0, 4, a(advice["playbook"]))
+        h("Playbook"); pdf.set_font("Courier", "", 8)
+        pdf.multi_cell(0, 4, a(advice["playbook"]), wrapmode="CHAR")
     return bytes(pdf.output())
 
 
@@ -143,6 +170,24 @@ def render_advice(intake, advice):
         if vuln.get("rhsa"):
             st.write(f"Fixing erratum: `{vuln['rhsa']}` → `{vuln.get('fixed_nvra','')}`")
 
+    controls = advice.get("existing_controls", [])
+    if controls:
+        if any(c.get("status") == "mitigated" for c in controls):
+            st.success("You may already be protected — a control you run mitigates this. See below.")
+        st.markdown("### Controls you already have")
+        for c in controls:
+            with st.container(border=True):
+                st.markdown(f"{CONTROL_ICON.get(c.get('status'), '⚪')} **{c.get('control','')}** "
+                            f"— {c.get('status','?').replace('_',' ')}")
+                st.write(c.get("rationale", ""))
+                for src in c.get("source_urls", []):
+                    st.caption(f"source: {src}")
+
+    risk = advice.get("business_risk")
+    if risk:
+        st.markdown("### 💼 What this means for your business")
+        st.warning(risk)
+
     st.markdown("### Mitigation options")
     recommended = advice.get("recommended_title")
     for opt in advice.get("options", []):
@@ -169,14 +214,18 @@ def render_advice(intake, advice):
             st.code(advice["playbook"], language="yaml")
 
     md = report_md(intake, advice)
-    share, _, dl_md, dl_pdf = st.columns([3, 2, 1, 1])
-    share.download_button("📤 Share this analysis with my TAM",
-                          data=md, file_name="ndvm-advice.md", mime="text/markdown")
-    dl_md.download_button("⬇️ .md", data=md, file_name="ndvm-analysis.md",
-                          mime="text/markdown")
+    cve = (advice.get("vulnerability", {}).get("cve_id") or intake.get("cve") or "analysis")
+    base = f"NDVM-{cve}-mitigation".replace(" ", "")  # e.g. NDVM-CVE-2023-3390-mitigation
+    st.markdown("#### Export this analysis")
+    share, dl_md, dl_pdf = st.columns(3)
+    share.download_button("📤 Share with my TAM", data=md, file_name=f"{base}.md",
+                          mime="text/markdown", use_container_width=True)
+    dl_md.download_button("⬇️ Download Markdown", data=md, file_name=f"{base}.md",
+                          mime="text/markdown", use_container_width=True)
     try:
-        dl_pdf.download_button("⬇️ .pdf", data=report_pdf(intake, advice),
-                               file_name="ndvm-analysis.pdf", mime="application/pdf")
+        dl_pdf.download_button("⬇️ Download PDF", data=report_pdf(intake, advice),
+                               file_name=f"{base}.pdf", mime="application/pdf",
+                               use_container_width=True)
     except Exception as e:  # PDF is a nice-to-have; never block the page on it
         dl_pdf.caption(f"pdf n/a: {e}")
 

@@ -51,6 +51,19 @@ class VulnFinding(BaseModel):
     source_urls: List[str] = []
 
 
+class ControlAssessment(BaseModel):
+    """Does a control the customer ALREADY runs mitigate this specific CVE?"""
+    control: str
+    status: Literal["mitigated", "partial", "not_mitigated", "unknown"]
+    rationale: str = ""
+    source_urls: List[str] = []
+
+
+class ControlReport(BaseModel):
+    """Typed wrapper so the validator's verdict can't drift on the way to the result."""
+    controls: List[ControlAssessment] = []
+
+
 class MitigationOption(BaseModel):
     title: str
     action_type: str
@@ -67,6 +80,8 @@ class AdviceResult(BaseModel):
     platform: Platform
     environment_summary: str
     vulnerability: VulnFinding
+    business_risk: str = ""            # plain-language risk for a non-technical decision-maker
+    existing_controls: List[ControlAssessment] = []   # controls David already has
     options: List[MitigationOption]
     recommended_title: str
     explanation: str

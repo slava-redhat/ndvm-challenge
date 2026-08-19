@@ -9,6 +9,13 @@ SEARCH_PER_PAGE = 10  # ponytail: cap rows — enough for triage, keeps LLM toke
 NO_FIX_STATES = {"Fix deferred", "Will not fix", "Out of support scope", "Affected"}
 
 
+def ndvm_applies_for(fix_state: str) -> bool:
+    """NDVM applies unless Red Hat says the product isn't affected. A fix that shipped
+    but can't be applied yet (reboot/change window blocked) STILL needs interim
+    mitigation — so 'Fixed' is a first-class NDVM trigger, only 'Not affected' opts out."""
+    return fix_state != "Not affected"
+
+
 def search_params(package="", product="", severity="", advisory="", after="") -> dict:
     """Build the cve.json search query from non-empty filters (raises if none given)."""
     params = {"per_page": SEARCH_PER_PAGE}
@@ -84,7 +91,7 @@ def analyze_cve_json(data: dict, product_hint: str = "") -> dict:
         elif all_states:
             fix_state = next(iter(all_states))
 
-    ndvm_applies = fix_state != "Not affected"
+    ndvm_applies = ndvm_applies_for(fix_state)
     if fix_state == "Not affected":
         rationale = "Red Hat marks this product not affected — the mitigation is to do nothing (evidence: VEX)."
     elif fix_state == "Fixed":

@@ -8,8 +8,9 @@ from crewai import Agent, Crew, Process, Task
 from crewai.flow.flow import Flow, listen, router, start
 from pydantic import BaseModel
 
+from cve_parse import ndvm_applies_for
 from llm import get_llm
-from models import AdviceResult, CveChoice, Intake, Sufficiency
+from models import AdviceResult, ControlReport, CveChoice, Intake, Sufficiency
 from tools import RagSearchTool, RedHatCveSearchTool, RedHatSecurityDataTool
 
 LLM = get_llm()
@@ -77,6 +78,19 @@ def _analysis_agents() -> dict[str, Agent]:
         ),
         tools=[RAG_TOOL], llm=LLM, verbose=False,
     )
+    validator = Agent(
+        role="Compensating Control Validator",
+        goal="Judge whether the controls the customer ALREADY runs mitigate this specific CVE.",
+        backstory=(
+            "You are a Red Hat security architect who knows the fastest safe answer is often "
+            "'you're already protected'. Given a CVE's attack vector and the controls a "
+            "customer already has (SELinux, firewall, network segmentation, FIPS, IdM…), you "
+            "judge for each whether it fully blocks, partially reduces, or does not affect "
+            "THIS exploit path — grounded in Red Hat guidance, never guessed. You never "
+            "credit a control the customer did not say they have."
+        ),
+        llm=LLM, verbose=False,
+    )
     strategist = Agent(
         role="Risk & Trade-off Strategist",
         goal="Rank mitigations for THIS customer's constraint and pick the best.",
@@ -88,7 +102,7 @@ def _analysis_agents() -> dict[str, Agent]:
         llm=LLM, verbose=False,
     )
     return {"profiler": profiler, "researcher": researcher, "analyst": analyst,
-            "retriever": retriever, "strategist": strategist}
+            "retriever": retriever, "validator": validator, "strategist": strategist}
 
 
 def _synth_agent(persona: str) -> Agent:
@@ -178,8 +192,10 @@ def run_gate(message: str, intake: Intake, answers: str = "") -> Sufficiency:
             "cve='{cve}', constraint='{constraint}'.\n"
             "Answers already gathered from earlier questions (may say 'none'):\n---\n{answers}\n---\n"
             "Judge like a TAM: do you know where/how the vuln was detected, the exact "
-            "affected component+version, the exposure, whether backups/DR exist, and the "
-            "real maintenance window? If key pieces are missing, you are NOT sufficient.\n"
+            "affected component+version, the exposure, the security controls already in "
+            "place (SELinux, firewall, network segmentation, FIPS, IdM), whether backups/DR "
+            "exist, and the real maintenance window? If key pieces are missing, you are NOT "
+            "sufficient.\n"
             "If NOT sufficient: set sufficient=false and generate up to 5 crisp questions, "
             "each with 2-5 concrete tick-box options tailored to THIS case (never generic "
             "filler). Only ask what would change the recommendation, and do not re-ask "
@@ -256,6 +272,22 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
         expected_output="A list of grounded candidate mitigations with sources.",
         agent=a["retriever"],
     )
+    validate = Task(
+        description=(
+            "From the customer's answers, list the security controls they ALREADY have in "
+            "place:\n---\n{answers}\n---\n"
+            "For CVE '{cve}', using the analyst's finding (attack vector, fix_state) and the "
+            "retrieved Red Hat guidance, assess EACH existing control: status is 'mitigated' "
+            "(fully blocks this exploit path), 'partial' (reduces exposure but is not a full "
+            "fix), 'not_mitigated', or 'unknown'. Give a one-line rationale and cite a "
+            "source. Do NOT assess controls the customer did not mention and never invent "
+            "controls. If they mention none, return an empty list."
+        ),
+        expected_output="A ControlReport: each existing control with status, rationale, source_urls.",
+        agent=a["validator"],
+        context=[analyze, retrieve],
+        output_pydantic=ControlReport,
+    )
     strategize = Task(
         description=(
             "Rank the retrieved candidates by disruption, effectiveness and effort for the "
@@ -277,26 +309,40 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
             f"{tone} Produce the final AdviceResult. Set persona='{persona}', "
             "platform='{platform}'. Copy the vulnerability fields (cve_id, threat_severity, "
             "cvss3, fix_state, ndvm_applies, rhsa, fixed_nvra, rationale, source_urls) "
-            "exactly from the analyst's tool output. Fill options from the strategist's "
-            "ranking, each with disruption, effectiveness (1-4), effort (1-4) and source_urls. "
-            "Set recommended_title to the top option and write a clear explanation of the "
-            "trade-offs. If the recommended option is automatable, put a short Ansible-style "
-            "snippet in 'playbook'."
+            "exactly from the analyst's tool output. Copy the validator's control "
+            "assessments verbatim into existing_controls (control, status, rationale, "
+            "source_urls). If any existing control is 'mitigated', lead the explanation with "
+            "the fact that the customer may already be protected. Write 'business_risk': 2-4 "
+            "sentences a platform owner could relay to a non-technical manager — what could "
+            "happen in plain terms (no CVSS/CVE jargon), how exposed they are RIGHT NOW given "
+            "the constraint '{constraint}' and any compensating controls above, and roughly "
+            "how long that exposure lasts until they can patch. If a control fully mitigates, "
+            "say the residual business risk is low. Do not invent impact beyond the severity "
+            "and exposure established above. Fill options from the "
+            "strategist's ranking, each with disruption, effectiveness (1-4), effort (1-4) "
+            "and source_urls. Set recommended_title to the top option and write a clear "
+            "explanation of the trade-offs. If the recommended option is automatable, put a "
+            "short Ansible-style snippet in 'playbook'."
         ),
         expected_output="A complete AdviceResult.",
         agent=synth,
-        context=[profile, analyze, retrieve, strategize],
+        context=[profile, analyze, retrieve, validate, strategize],
         output_pydantic=AdviceResult,
     )
     crew = Crew(
-        agents=[a["profiler"], a["analyst"], a["retriever"], a["strategist"], synth],
-        tasks=[profile, analyze, retrieve, strategize, synthesize],
+        agents=[a["profiler"], a["analyst"], a["retriever"], a["validator"],
+                a["strategist"], synth],
+        tasks=[profile, analyze, retrieve, validate, strategize, synthesize],
         process=Process.sequential,
         verbose=False,
     )
     out = crew.kickoff(inputs={**intake.model_dump(), "persona": persona,
                                "answers": answers or "none"})
-    return out.pydantic.model_dump()
+    result: AdviceResult = out.pydantic
+    # ponytail: pin ndvm_applies from the authoritative fix_state so the synth LLM can't
+    # flip it to False on a "Fixed" CVE the customer still can't reboot to apply.
+    result.vulnerability.ndvm_applies = ndvm_applies_for(result.vulnerability.fix_state)
+    return result.model_dump()
 
 
 # ---- Flow --------------------------------------------------------------------
