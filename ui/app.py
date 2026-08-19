@@ -98,7 +98,8 @@ def report_md(intake: dict, advice: dict) -> str:
         star = " ⭐ **RECOMMENDED**" if o.get("title") == rec else ""
         out.append(f"\n### {o.get('title','')}{star}")
         out.append(f"- disruption: **{o.get('disruption','?')}** · "
-                   f"effectiveness: {o.get('effectiveness','?')}/4 · effort: {o.get('effort','?')}/4")
+                   f"effectiveness: {o.get('effectiveness','?')}/4 · effort: {o.get('effort','?')}/4"
+                   + (f" · fit score: {o['score']}" if o.get("score") is not None else ""))
         if o.get("description"):
             out.append(o["description"])
         out += [f"  - {s}" for s in o.get("steps", [])]
@@ -172,7 +173,8 @@ def report_pdf(intake: dict, advice: dict) -> bytes:
         star = "  [RECOMMENDED]" if o.get("title") == rec else ""
         h(f"{o.get('title','')}{star}", 11)
         p(f"disruption: {o.get('disruption','?')}  |  effectiveness: "
-          f"{o.get('effectiveness','?')}/4  |  effort: {o.get('effort','?')}/4")
+          f"{o.get('effectiveness','?')}/4  |  effort: {o.get('effort','?')}/4"
+          + (f"  |  fit score: {o['score']}" if o.get("score") is not None else ""))
         if o.get("description"):
             p(o["description"])
         for s in o.get("steps", []):
@@ -372,6 +374,9 @@ def render_advice(intake, advice):
                           f"disruption: **{opt.get('disruption','?')}**")
             c[1].markdown(f"effectiveness: {dots(opt.get('effectiveness'))}")
             c[2].markdown(f"effort: {dots(opt.get('effort'))}")
+            if opt.get("score") is not None:
+                st.caption(f"fit score **{opt['score']}** · ranked by disruption/"
+                           "effectiveness/effort for your constraint (higher = better)")
             st.write(opt.get("description", ""))
             if opt.get("steps"):
                 st.markdown("\n".join(f"- {s}" for s in opt["steps"]))

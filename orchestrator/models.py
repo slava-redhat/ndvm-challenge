@@ -86,6 +86,7 @@ class MitigationOption(BaseModel):
     effort: int = Field(ge=1, le=4)
     steps: List[str] = []
     source_urls: List[str] = []
+    score: Optional[float] = None   # deterministic fit score (scoring.py); set in Python
 
 
 class AdviceResult(BaseModel):

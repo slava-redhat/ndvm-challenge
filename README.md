@@ -1,9 +1,9 @@
 # NDVM — Non-Disruptive Vulnerability Mitigation
 
-When patching isn't feasible yet, David (a Platform Owner) describes his environment
+When patching isn't feasible yet, a Platform Owner describes their environment
 and a CVE and immediately gets **viable mitigation options → risk trade-offs → a
 recommended approach** — each **trusted** (traceable to Red Hat security data) and
-**personalized** to his platform. A CrewAI multi-agent flow does the reasoning, and a
+**personalized** to their platform. A CrewAI multi-agent flow does the reasoning, and a
 Python "trust spine" (Red Hat `fix_state` + CISA KEV + FIRST EPSS) supplies the facts
 so the model never guesses the things that must be right.
 
@@ -86,7 +86,7 @@ podman compose --env-file .env up --build
 > First run must start from a fresh `pgdata` volume so the schema initializes.
 > Re-run ingest anytime after adding data: `podman compose run --rm ingest`.
 
-## Demo — Primary (David, the customer)
+## Demo — Primary
 In the UI, leave persona on **Auto-detect** and enter:
 > *CVE-2023-3390 is flagged on my RHEL 8 fleet. I can't reboot for patching until
 > the quarter-end maintenance window. What can I do right now without breaking production?*
@@ -94,7 +94,7 @@ In the UI, leave persona on **Auto-detect** and enter:
 You'll see the router pick the **Customer flow**, the gate confirm/ask about the case,
 the CVE's Red Hat `fix_state`, an **urgency badge** (KEV/EPSS tier), ranked
 non-disruptive options (disruption / effectiveness / effort) with a recommended banner
-and citations, plus a plain-language **business-risk** summary David can forward to a
+and citations, plus a plain-language **business-risk** summary the owner can forward to a
 non-technical manager.
 
 Try one without a CVE to see the Researcher discover it:
@@ -139,6 +139,36 @@ evidence-first briefing (raw `fix_state` / RHSA / source URLs), and you unlock t
 4. **Consistent answers across the team.** Because facts come from Red Hat's data + KEV/EPSS
    and every option cites a source, two TAMs asking the same question get the same grounded
    briefing — the export (Markdown/PDF) carries the provenance tags so it can be relayed as-is.
+
+5. **Compare the same CVE across two accounts.** CVE-2023-3390 is tracked by both
+   *Meridian Telecom Group* and *Helios Health Systems*, but the estates differ (exposure,
+   controls, reboot windows). Run each and the briefings personalize accordingly — same CVE,
+   different affected-host counts and different recommended option order:
+   ```bash
+   curl -s "http://localhost:8000/triage?account=Meridian%20Telecom%20Group" | jq '.cves[] | select(.cve=="CVE-2023-3390")'
+   curl -s "http://localhost:8000/triage?account=Helios%20Health%20Systems"  | jq '.cves[] | select(.cve=="CVE-2023-3390")'
+   ```
+
+6. **"Are we even affected?" (fast do-nothing answer).** A TAM fielding panic about the
+   xz backdoor can show the customer they're clear in one call — the estate's VEX/affected
+   data demotes it to `routine`:
+   > *Northwind is worried about the xz-utils backdoor CVE-2024-3094 on their RHEL boxes —
+   > are they exposed and do they need an emergency change?*
+
+   The gate doesn't need to interrogate: the account says no host is affected, so the
+   briefing leads with "not affected → no action" and cites the VEX source.
+
+7. **Estate roll-up for a status report.** Pull the whole ranked list for one account and
+   turn it straight into a customer-facing summary (act-now first, routine last):
+   ```bash
+   curl -s "http://localhost:8000/triage?account=Northwind%20Financial%20Services" \
+     | jq -r '.cves[] | "\(.tier)\t\(.cve)\taffected=\(.affected_count)"'
+   ```
+
+8. **List the accounts a TAM can look up** (the estate directory for outreach):
+   ```bash
+   curl -s "http://localhost:8000/accounts" | jq -r '.[] | "\(.account_name) — \(.industry)"'
+   ```
 
 ## API
 ```

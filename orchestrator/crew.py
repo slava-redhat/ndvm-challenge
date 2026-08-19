@@ -15,6 +15,7 @@ from llm import get_llm
 from models import (AdviceResult, ControlReport, CveChoice, ExploitSignal, Intake,
                     Sufficiency)
 from priority import assess, classify, priority_note
+from scoring import rank_options
 from tools import RagSearchTool, RedHatCveSearchTool, RedHatSecurityDataTool
 
 LLM = get_llm()
@@ -334,9 +335,12 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
             "known-exploited. Do not invent impact beyond the severity, exposure and this "
             "urgency established above. Fill options from the "
             "strategist's ranking, each with disruption, effectiveness (1-4), effort (1-4) "
-            "and source_urls. Set recommended_title to the top option and write a clear "
-            "explanation of the trade-offs. If the recommended option is automatable, put a "
-            "short Ansible-style snippet in 'playbook'."
+            "and source_urls. Write a clear explanation of the trade-offs that favours the "
+            "LEAST DISRUPTIVE option that is still effective for the constraint "
+            "'{constraint}' (the options are re-ranked deterministically by a "
+            "disruption-weighted score afterwards, so keep your explanation consistent with "
+            "that preference and set recommended_title accordingly). If the recommended "
+            "option is automatable, put a short Ansible-style snippet in 'playbook'."
         ),
         expected_output="A complete AdviceResult.",
         agent=synth,
@@ -362,6 +366,12 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
     sig["tier"], sig["rationale"] = classify(sig["in_kev"], sig["epss"],
                                              result.vulnerability.threat_severity)
     result.priority = ExploitSignal(**sig)
+    # Deterministic option ranking: order + recommendation are a pure function of each
+    # option's disruption/effectiveness/effort (auditable, reproducible) — the LLM keeps the
+    # explanation. Weighted by the customer's uptime constraint and exploitation urgency.
+    if result.options:
+        rank_options(result.options, intake.constraint, urgent=sig["tier"] in ("act_now", "prioritize"))
+        result.recommended_title = result.options[0].title
     return result.model_dump()
 
 

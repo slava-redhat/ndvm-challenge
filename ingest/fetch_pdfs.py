@@ -5,9 +5,9 @@ Data-driven: add a row to GUIDES and re-run. The docs.redhat.com PDF URL is full
 predictable, so we build it from (product, version, guide) and just verify each is a
 real application/pdf before saving. Idempotent: existing files are skipped.
 
-    python3 scripts/fetch_pdfs.py            # download the curated set
-    python3 scripts/fetch_pdfs.py --dry-run  # print the URLs it would fetch
-    python3 scripts/fetch_pdfs.py --selfcheck
+    python3 ingest/fetch_pdfs.py            # download the curated set
+    python3 ingest/fetch_pdfs.py --dry-run  # print the URLs it would fetch
+    python3 ingest/fetch_pdfs.py --selfcheck
 
 Then:  make ingest
 """

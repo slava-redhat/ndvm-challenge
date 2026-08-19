@@ -1,5 +1,9 @@
 .PHONY: help up down logs ingest reingest stats sources pdfs health test clean
 
+# Bare `make` shows help. (`make -h`/`--help` are GNU make's own flags and print
+# make's usage — they can't be overridden by a target; use `make` or `make help`.)
+.DEFAULT_GOAL := help
+
 # .env supplies POSTGRES_USER/DB; fall back to the defaults in .env.example.
 POSTGRES_USER ?= ndvm
 POSTGRES_DB   ?= ndvm
