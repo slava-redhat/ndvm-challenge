@@ -33,17 +33,25 @@ def in_kev(cve: str) -> bool:
         return False  # feed down: treat as not-listed rather than crash
 
 
+@lru_cache(maxsize=4096)
+def _epss_cached(cve: str) -> tuple:
+    """Live EPSS lookup, cached per process. Raises on failure/no-data so lru_cache
+    keeps only successful hits (a transient error or a not-yet-scored CVE stays retryable
+    — lru_cache never caches exceptions)."""
+    r = requests.get(EPSS_API, params={"cve": cve}, timeout=TIMEOUT)
+    r.raise_for_status()
+    data = r.json().get("data") or []
+    if not data:
+        raise LookupError("no EPSS data")
+    return float(data[0]["epss"]), float(data[0]["percentile"])
+
+
 def fetch_epss(cve: str):
     """(epss, percentile) as floats, or (None, None) if unavailable."""
     try:
-        r = requests.get(EPSS_API, params={"cve": cve.strip().upper()}, timeout=TIMEOUT)
-        r.raise_for_status()
-        data = r.json().get("data") or []
-        if data:
-            return float(data[0]["epss"]), float(data[0]["percentile"])
+        return _epss_cached(cve.strip().upper())
     except Exception:
-        pass
-    return None, None
+        return None, None
 
 
 def classify(kev: bool, epss, severity: str = "") -> tuple[str, str]:

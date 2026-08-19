@@ -73,8 +73,21 @@ def rag_search_hybrid(query: str, platform: str | None = None, k: int = 6,
                     f"ORDER BY ts_rank_cd(tsv, plainto_tsquery('english', %s)) DESC LIMIT %s",
                     params + [query, query, pool])
         lexical = [r[0] for r in cur.fetchall()]
+        # Curated catalog ranked on its OWN — the option menu is ~10 vetted chunks, and
+        # PDF prose (thousands of chunks) can push every catalog entry past the global
+        # top-`pool`, so it never becomes a candidate and CURATED_BOOST (which only lifts
+        # already-retrieved chunks) can't act. Rank the catalog by itself so the best-
+        # matching option is always in the fusion, then boost it like before.
+        mit_where = "WHERE metadata->>'doc_type' = 'mitigation'"
+        mit_params: list = []
+        if platform and platform != "other":
+            mit_where += " AND metadata->>'platform' IN (%s, 'any')"
+            mit_params = [platform]
+        cur.execute(f"SELECT id FROM doc_chunk {mit_where} "
+                    f"ORDER BY embedding <=> %s::vector LIMIT %s", mit_params + [qvec, pool])
+        curated = [r[0] for r in cur.fetchall()]
         scores: dict = {}
-        for ranked in (dense, lexical):
+        for ranked in (dense, lexical, curated):
             for rank, doc_id in enumerate(ranked, 1):
                 scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (RRF_K + rank)
         if not scores:
