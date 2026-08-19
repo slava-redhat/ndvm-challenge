@@ -67,10 +67,24 @@ ranked non-disruptive options (disruption / effectiveness / effort) with a recom
 banner and citations. Switch the toggle to **Red Hat Support / TAM** to get the denser,
 evidence-first briefing from the same data.
 
-## Adding platforms / mitigations / CVEs
-- Mitigations: drop a `data/mitigations/<platform>.yaml`, re-run ingest.
-- Hardening docs: drop PDFs in `data/pdfs/`, re-run ingest.
-- CVEs: edit `INGEST_CVES` in `.env`, re-run ingest.
+## Make targets
+```
+make up        # build + start the full stack
+make ingest    # incremental: embed only new/changed sources
+make reingest  # force full rebuild (clears + re-embeds)
+make sources   # the ledger — exactly what's ingested (kind, source, chunks, when)
+make stats     # corpus totals
+make pdfs      # where to drop PDFs + what's there
+make down / make clean   # stop / stop+wipe data volume
+```
+
+## Adding platforms / mitigations / CVEs / docs
+Ingest is **incremental**: each source (yaml/pdf basename or CVE id) is recorded in
+the `ingested_source` ledger with a content hash, so `make ingest` only embeds what's
+new or changed (`make sources` shows the ledger).
+- Mitigations: drop a `data/mitigations/<platform>.yaml`, `make ingest`.
+- Hardening docs: **drop PDFs in `data/pdfs/`**, `make ingest`.
+- CVEs: edit `INGEST_CVES` in `.env`, `make ingest`.
 
 ## Tests
 ```bash

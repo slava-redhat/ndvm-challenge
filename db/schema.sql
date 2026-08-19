@@ -46,6 +46,16 @@ CREATE TABLE IF NOT EXISTS cve_product_state (
     fixed_nvra   TEXT
 );
 
+-- Ingest ledger: what has been loaded + content hash for idempotent re-ingest.
+-- (Also created by ingest.py for already-provisioned volumes.)
+CREATE TABLE IF NOT EXISTS ingested_source (
+    source      TEXT PRIMARY KEY,   -- pdf/yaml basename or CVE id
+    kind        TEXT NOT NULL,      -- pdf|mitigation|cve
+    sha256      TEXT NOT NULL,      -- hash of source bytes; unchanged => skip
+    chunks      INT  NOT NULL DEFAULT 0,
+    ingested_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- Recommendation audit trail (trust = traceable output).
 CREATE TABLE IF NOT EXISTS recommendation (
     id           BIGSERIAL PRIMARY KEY,
