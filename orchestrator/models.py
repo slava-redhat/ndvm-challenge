@@ -8,6 +8,7 @@ Platform = Literal["rhel", "openshift", "other"]
 
 class Intake(BaseModel):
     """What the Router extracts from the user's opening message."""
+    on_topic: bool = Field(default=True, description="True only if the message concerns IT security, vulnerabilities, CVEs, patching or mitigation")
     persona: Persona = Field(description="'primary' = customer Platform Owner/IT Leader; 'secondary' = Red Hat Support/TAM")
     platform: Platform = "other"
     product: str = Field(default="", description="e.g. 'Red Hat Enterprise Linux 8'")
@@ -29,6 +30,13 @@ class Sufficiency(BaseModel):
     sufficient: bool = Field(description="True only when advice would fit THIS environment, no wide guessing")
     missing: List[str] = Field(default=[], description="what is still unknown")
     questions: List[ClarifyQuestion] = []   # populated only when not sufficient
+
+
+class CveChoice(BaseModel):
+    """The Researcher's typed pick, so the Analyst can't drift to a different CVE."""
+    cve: str = Field(description="the single CVE id to analyze next, e.g. CVE-2023-3390")
+    why: str = ""
+    alternatives: List[str] = Field(default=[], description="other notable CVE ids")
 
 
 class VulnFinding(BaseModel):
