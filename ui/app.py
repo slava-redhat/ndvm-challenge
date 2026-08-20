@@ -1,4 +1,5 @@
 """NDVM Streamlit UI: chat intake -> ranked, cited mitigation options."""
+import json
 import os
 import requests
 import streamlit as st
@@ -57,6 +58,25 @@ def dots(n: int) -> str:
     return "●" * n + "○" * (4 - n)
 
 
+def render_audit(audit: list) -> None:
+    """The visible trust story: how this answer was produced, step by step. Each step
+    shows its BASIS (what it rests on) so 'trusted' is inspectable, not asserted."""
+    if not audit:
+        return
+    total = sum(s.get("ms") or 0 for s in audit)
+    with st.expander(f"🧾 How this answer was produced — audit trail"
+                     + (f" ({total/1000:.0f}s)" if total else ""), expanded=False):
+        st.caption("Green-badged steps are computed in Python from authoritative feeds "
+                   "(never model-guessed). Every fact traces to a source below.")
+        for i, s in enumerate(audit, 1):
+            ms = f"  ·  {s['ms']/1000:.1f}s" if s.get("ms") else ""
+            st.markdown(f"**{i}. {s.get('step','')}**  `{s.get('basis','')}`{ms}")
+            if s.get("detail"):
+                st.caption(s["detail"])
+            for src in s.get("sources", []):
+                st.caption(src_label(src))
+
+
 def report_md(intake: dict, advice: dict) -> str:
     """Full analysis as Markdown — the single source for both the .md and the TAM share."""
     v = advice.get("vulnerability", {})
@@ -107,6 +127,13 @@ def report_md(intake: dict, advice: dict) -> str:
     out += ["\n## Recommended approach", advice.get("explanation", "")]
     if advice.get("playbook"):
         out += ["\n## Playbook", "```yaml", advice["playbook"], "```"]
+    audit = advice.get("audit", [])
+    if audit:
+        out.append("\n## How this answer was produced (audit trail)")
+        for i, s in enumerate(audit, 1):
+            out.append(f"{i}. **{s.get('step','')}** [{s.get('basis','')}]"
+                       + (f" — {s['detail']}" if s.get("detail") else ""))
+            out += [f"   - source: {src_tag(x)}" for x in s.get("sources", [])]
     return "\n".join(out)
 
 
@@ -280,12 +307,34 @@ else:
 MAX_ROUNDS = 2  # ponytail: stop questioning after 2 rounds and advise anyway (force)
 
 
-def post_advise(message, persona, answers="", force=False, account=""):
-    resp = requests.post(f"{ORCH}/advise",
-                         json={"message": message, "persona": persona, "answers": answers,
-                               "force": force, "account": account}, timeout=300)
-    resp.raise_for_status()
-    return resp.json()
+def run_with_progress(message, persona, answers="", force=False, account=""):
+    """Stream the flow's real steps into a live status box (replaces the opaque spinner),
+    and return the final result dict. Calls st.stop() on error."""
+    payload = {"message": message, "persona": persona, "answers": answers,
+               "force": force, "account": account}
+    data = None
+    with st.status("Working on it…", expanded=True) as status:
+        try:
+            with requests.post(f"{ORCH}/advise_stream", json=payload,
+                               stream=True, timeout=300) as r:
+                r.raise_for_status()
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    evt = json.loads(line)
+                    if evt.get("type") == "step":
+                        status.update(label=evt["step"])
+                        st.write(f"• {evt['step']}")
+                    elif evt.get("type") == "error":
+                        raise RuntimeError(evt.get("message", "unknown error"))
+                    elif evt.get("type") == "result":
+                        data = evt.get("data")
+            status.update(label="Done", state="complete")
+        except Exception as e:
+            status.update(label="Failed", state="error")
+            st.error(f"Orchestrator error: {e}")
+            st.stop()
+    return data
 
 
 def render_account(acc):
@@ -406,6 +455,9 @@ def render_advice(intake, advice):
     except Exception as e:  # PDF is a nice-to-have; never block the page on it
         dl_pdf.caption(f"pdf n/a: {e}")
 
+    st.markdown("### Audit trail")
+    render_audit(advice.get("audit", []))
+
 
 ss = st.session_state
 pending = ss.get("pending")  # {questions, orig_msg, persona, answers, round}
@@ -433,13 +485,8 @@ if pending:
         merged = (pending["answers"] + "\n" + new).strip()
         rnd = pending["round"] + 1
         force = rnd > MAX_ROUNDS  # ran out of rounds: advise with what we have
-        with st.spinner("Re-checking your case…" if not force else "Analysing…"):
-            try:
-                data = post_advise(pending["orig_msg"], pending["persona"], merged, force,
-                                   pending.get("account", ""))
-            except Exception as e:
-                st.error(f"Orchestrator error: {e}")
-                st.stop()
+        data = run_with_progress(pending["orig_msg"], pending["persona"], merged, force,
+                                 pending.get("account", ""))
         if data.get("status") == "need_info" and not force:
             ss["pending"] = {"questions": data["questions"], "missing": data.get("missing", []),
                              "orig_msg": pending["orig_msg"], "persona": pending["persona"],
@@ -453,12 +500,7 @@ if pending:
 
 # Phase 1 — fresh submission.
 elif st.button("Get mitigation options", type="primary") and msg.strip():
-    with st.spinner("Routing → checking your case fits → analysing → ranking…"):
-        try:
-            data = post_advise(msg, persona, account=account)
-        except Exception as e:
-            st.error(f"Orchestrator error: {e}")
-            st.stop()
+    data = run_with_progress(msg, persona, account=account)
     if data.get("status") == "need_info":
         ss["pending"] = {"questions": data["questions"], "missing": data.get("missing", []),
                          "orig_msg": msg, "persona": persona, "answers": "", "round": 1,

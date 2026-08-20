@@ -33,6 +33,7 @@ from accounts import (account_view, default_cve, detect_account, estate_as_answe
                       load_account)
 from cve_parse import ndvm_applies_for
 from llm import get_llm
+import progress
 from models import (AdviceResult, ControlReport, CveChoice, ExploitSignal, Intake,
                     Sufficiency)
 from priority import assess, classify, priority_note
@@ -261,10 +262,54 @@ def _kick(agent: Agent, task: Task, inputs: dict):
                 verbose=False).kickoff(inputs=inputs)
 
 
+def _audit_trail(intake: Intake, persona: str, researched: bool, sig: dict,
+                 result: AdviceResult, controls_n: int, timings: tuple) -> list[dict]:
+    """The visible trust story: the ordered chain that produced this answer, each step
+    tagged with its BASIS (Red Hat data / Python feed / deterministic / LLM) and its
+    sources — so 'trusted' is inspectable, not asserted. Assembled from data already on
+    the result; no extra model calls."""
+    _t0, _tA, _tB, _tC = timings
+    v = result.vulnerability
+    opt_sources = sorted({s for o in result.options for s in (o.source_urls or [])})
+    epss = f" · EPSS {sig['epss']:.0%}" if sig.get("epss") is not None else ""
+    trail = [{"step": "Route & scope the request", "basis": "LLM (router)",
+              "detail": f"Classified as {persona} · platform {intake.platform} · "
+                        f"CVE {intake.cve or '—'}", "sources": []}]
+    if researched:
+        trail.append({"step": "Discover the CVE", "basis": "Red Hat CVE catalog",
+                      "detail": f"No CVE named — searched Red Hat's public catalog and "
+                                f"pinned {intake.cve}", "sources": []})
+    trail += [
+        {"step": "Ground the vulnerability facts", "basis": "Red Hat Security Data",
+         "detail": f"fix_state = {v.fix_state} · severity {v.threat_severity}"
+                   + (f" · CVSS {v.cvss3}" if v.cvss3 else ""),
+         "sources": v.source_urls or [], "ms": int((_tA - _t0) * 1000)},
+        {"step": "Prioritize exploitation risk", "basis": "Python · CISA KEV + FIRST EPSS",
+         "detail": f"tier {sig['tier']}"
+                   + (" · KNOWN-EXPLOITED (CISA KEV)" if sig.get("in_kev") else "") + epss,
+         "sources": sig.get("source_urls", [])},
+        {"step": "Retrieve grounded mitigations", "basis": "Hybrid RAG (pgvector + FTS)",
+         "detail": f"{len(result.options)} sourced option(s) from the trusted knowledge base",
+         "sources": opt_sources, "ms": int((_tA - _t0) * 1000)},
+        {"step": "Validate controls you already run", "basis": "LLM · only stated controls",
+         "detail": f"{controls_n} existing control(s) assessed against this CVE",
+         "sources": [], "ms": int((_tB - _tA) * 1000)},
+        {"step": "Rank options & pick the recommendation", "basis": "Python · deterministic score",
+         "detail": f"ordered by disruption/effectiveness/effort for the constraint → "
+                   f"recommended “{result.recommended_title}”", "sources": []},
+        {"step": "Synthesize the briefing", "basis": "LLM",
+         "detail": "assembled options, trade-offs and business-risk into the final answer",
+         "sources": [], "ms": int((_tC - _tB) * 1000)},
+    ]
+    return trail
+
+
 def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
     # Pin the CVE deterministically: use the one the customer gave, else research once
     # and lock the pick in Python so the Analyst can't switch to a different CVE.
-    if not intake.cve.strip():
+    researched = not intake.cve.strip()
+    if researched:
+        progress.emit("Discovering the CVE in Red Hat's catalog")
         intake = intake.model_copy(update={"cve": run_research(intake).cve})
 
     # Prioritization facts (KEV + EPSS) — computed in Python, not LLM-guessed. Fed into
@@ -298,6 +343,7 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
         expected_output="A list of grounded candidate mitigations with sources.",
         agent=a["retriever"],
     )
+    progress.emit("Grounding the CVE in Red Hat data + retrieving mitigations")
     _t0 = time.time()
     with ThreadPoolExecutor(max_workers=2) as ex:
         fa = ex.submit(_kick, a["analyst"], analyze, base)
@@ -342,6 +388,7 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
         expected_output="A ranked shortlist with a recommended option and rationale.",
         agent=a["strategist"],
     )
+    progress.emit("Checking controls you already run + ranking options")
     with ThreadPoolExecutor(max_workers=2) as ex:
         fv = ex.submit(_kick, a["validator"], validate, ctx)
         fs = ex.submit(_kick, a["strategist"], strategize, ctx)
@@ -354,6 +401,7 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
     tone = ("Write for a Red Hat TAM: dense, evidence-first, every claim cited."
             if persona == "secondary"
             else "Write for a stressed Platform Owner: plain, confident, reassuring.")
+    progress.emit("Writing the briefing")
     synth_inputs = {**ctx, "controls_json": control_report.model_dump_json(),
                     "strategy": strategy}
     synthesize = Task(
@@ -410,7 +458,12 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
     if result.options:
         rank_options(result.options, intake.constraint, urgent=sig["tier"] in ("act_now", "prioritize"))
         result.recommended_title = result.options[0].title
-    return result.model_dump()
+    d = result.model_dump()
+    # Audit trail rides in the payload: shown in the UI and persisted via the existing
+    # recommendation table (its payload JSON), so the answer's provenance is inspectable.
+    d["audit"] = _audit_trail(intake, persona, researched, sig, result,
+                              len(control_report.controls), (_t0, _tA, _tB, _tC))
+    return d
 
 
 # ---- Flow --------------------------------------------------------------------
@@ -430,6 +483,7 @@ class NDVMState(BaseModel):
 class NDVMFlow(Flow[NDVMState]):
     @start()
     def triage(self):
+        progress.emit("Routing & scoping your request")
         self.state.intake = run_router(self.state.message, self.state.forced_persona)
         if not self.state.intake.on_topic:
             self.state.gate = Sufficiency(sufficient=True)   # unused; refusal handled in route
@@ -446,6 +500,7 @@ class NDVMFlow(Flow[NDVMState]):
                 self.state.intake.persona = "secondary"  # ponytail: named account => TAM view
 
         if acc:
+            progress.emit("Loading the customer estate from Insights")
             if not self.state.intake.cve.strip():
                 self.state.intake.cve = default_cve(acc)
             self.state.intake.account = acc["account"]["account_name"]
@@ -455,6 +510,8 @@ class NDVMFlow(Flow[NDVMState]):
             self.state.gate = Sufficiency(sufficient=True)   # estate answers the gate
             return
 
+        if not self.state.force:
+            progress.emit("Checking the case fits your environment")
         self.state.gate = (Sufficiency(sufficient=True) if self.state.force
                            else run_gate(self.state.message, self.state.intake,
                                          self.state.answers))

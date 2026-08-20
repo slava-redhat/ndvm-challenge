@@ -1,7 +1,13 @@
 """FastAPI wrapper around the CrewAI NDVM flow."""
+import json
+import queue
+import threading
+
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+import progress
 from accounts import account_cves, list_accounts, load_account
 from crew import advise
 from db import save_recommendation
@@ -53,13 +59,51 @@ def triage_ep(account: str):
     return {"status": "ok", "account": acc["account"]["account_name"], "cves": rows}
 
 
-@app.post("/advise")
-def advise_ep(req: AdviseReq):
-    result = advise(req.message, req.persona or "", req.answers or "", req.force,
-                    req.account or "")
+def _persist(result: dict) -> None:
     if result.get("advice"):
         try:
             save_recommendation(result["advice"])
         except Exception:
             pass  # ponytail: audit is best-effort; never fail the user's answer over it
+
+
+@app.post("/advise")
+def advise_ep(req: AdviseReq):
+    result = advise(req.message, req.persona or "", req.answers or "", req.force,
+                    req.account or "")
+    _persist(result)
     return result
+
+
+@app.post("/advise_stream")
+def advise_stream_ep(req: AdviseReq):
+    """Same as /advise, but streams NDJSON progress events as the flow runs
+    ({"type":"step",...}) and ends with {"type":"result",...} (or "error"). Lets the UI
+    show the real audit trail live instead of an opaque spinner. The flow runs in a
+    worker thread; step labels drain through a queue."""
+    q: queue.Queue = queue.Queue()
+    box: dict = {}
+
+    def worker():
+        try:
+            with progress.using(q.put):  # emit(step) -> q.put(step); contextvar-scoped
+                box["result"] = advise(req.message, req.persona or "", req.answers or "",
+                                       req.force, req.account or "")
+        except Exception as e:  # surface the failure to the client, don't hang the stream
+            box["error"] = f"{type(e).__name__}: {e}"
+        finally:
+            q.put(None)  # sentinel: flow finished
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def gen():
+        while (step := q.get()) is not None:
+            yield json.dumps({"type": "step", "step": step}) + "\n"
+        if "error" in box:
+            yield json.dumps({"type": "error", "message": box["error"]}) + "\n"
+            return
+        result = box.get("result") or {}
+        _persist(result)
+        yield json.dumps({"type": "result", "data": result}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
