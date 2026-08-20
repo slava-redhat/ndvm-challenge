@@ -2,11 +2,24 @@
 
 Trust rule: fix_state is read from Red Hat's data, never inferred by an LLM.
 """
+import re
+
 CVE_PAGE = "https://access.redhat.com/security/cve/{cve}"
 SEARCH_PER_PAGE = 10  # ponytail: cap rows — enough for triage, keeps LLM tokens sane
 
 # fix_state values that mean "no vendor fix is coming (soon)" -> NDVM is the point.
 NO_FIX_STATES = {"Fix deferred", "Will not fix", "Out of support scope", "Affected"}
+
+# Trust-boundary input guards: reject a malformed tool arg BEFORE the HTTP round-trip
+# (an LLM occasionally passes "old openssh" or a URL as the CVE). Fail fast, cheaply.
+CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
+ADVISORY_RE = re.compile(r"^RH[SBE]A-\d{4}:\d+$", re.IGNORECASE)
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+SEVERITIES = {"low", "moderate", "important", "critical"}
+
+
+def valid_cve(cve: str) -> bool:
+    return bool(CVE_RE.match((cve or "").strip()))
 
 
 def ndvm_applies_for(fix_state: str) -> bool:
@@ -17,7 +30,8 @@ def ndvm_applies_for(fix_state: str) -> bool:
 
 
 def search_params(package="", product="", severity="", advisory="", after="") -> dict:
-    """Build the cve.json search query from non-empty filters (raises if none given)."""
+    """Build the cve.json search query from non-empty filters. Raises ValueError on a
+    malformed filter (validated here so the tool never fires a doomed request)."""
     params = {"per_page": SEARCH_PER_PAGE}
     for k, v in (("package", package), ("product", product), ("severity", severity),
                  ("advisory", advisory), ("after", after)):
@@ -25,6 +39,12 @@ def search_params(package="", product="", severity="", advisory="", after="") ->
             params[k] = v.strip()
     if len(params) == 1:
         raise ValueError("provide at least one filter (package/product/severity/advisory/after)")
+    if "severity" in params and params["severity"].lower() not in SEVERITIES:
+        raise ValueError(f"severity must be one of {sorted(SEVERITIES)}")
+    if "advisory" in params and not ADVISORY_RE.match(params["advisory"]):
+        raise ValueError("advisory must look like RHSA-2024:2394 (RHSA/RHBA/RHEA-YYYY:NNNN)")
+    if "after" in params and not DATE_RE.match(params["after"]):
+        raise ValueError("after must be a date YYYY-MM-DD")
     return params
 
 

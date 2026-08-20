@@ -7,7 +7,7 @@ import requests
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
-from cve_parse import analyze_cve_json, search_params, slim_rows
+from cve_parse import analyze_cve_json, search_params, slim_rows, valid_cve
 from db import rag_search_hybrid
 
 SECDATA = "https://access.redhat.com/hydra/rest/securitydata/cve/{cve}.json"
@@ -43,8 +43,11 @@ class RedHatSecurityDataTool(BaseTool):
     args_schema: Type[BaseModel] = SecDataInput
 
     def _run(self, cve: str, product: str = "") -> str:
+        cve = cve.strip()
+        if not valid_cve(cve):  # trust boundary: don't fetch a garbage id
+            return json.dumps({"error": f"not a valid CVE id: '{cve}'", "cve_id": cve})
         try:
-            data = _fetch_cve_json(cve.strip())
+            data = _fetch_cve_json(cve)
         except requests.RequestException as e:
             return json.dumps({"error": f"request failed: {e}", "cve_id": cve})
         if data is None:

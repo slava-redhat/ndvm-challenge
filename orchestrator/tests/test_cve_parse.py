@@ -1,5 +1,5 @@
 """Self-check for the trust-critical CVE parser. Run: python -m pytest (or this file)."""
-from cve_parse import analyze_cve_json, ndvm_applies_for
+from cve_parse import analyze_cve_json, ndvm_applies_for, search_params, valid_cve
 
 # Fix deferred for the customer's product -> NDVM applies (the David scenario).
 DEFERRED = {
@@ -69,10 +69,31 @@ def test_ndvm_trigger_rule():
     assert ndvm_applies_for("Not affected") is False
 
 
+def test_input_guardrails():
+    # CVE id validation (trust boundary before any HTTP fetch)
+    assert valid_cve("CVE-2023-3390") and valid_cve("cve-2024-12345")
+    assert not valid_cve("old openssh") and not valid_cve("") and not valid_cve("CVE-23-1")
+    # search filters: good inputs pass, malformed ones raise instead of firing a request
+    assert search_params(package="kernel", severity="Important")["severity"] == "Important"
+    assert search_params(advisory="RHSA-2024:2394")["advisory"] == "RHSA-2024:2394"
+    for bad in (dict(severity="scary"), dict(advisory="RHSA-bogus"), dict(after="2024/01/01")):
+        try:
+            search_params(**bad)
+            assert False, f"expected ValueError for {bad}"
+        except ValueError:
+            pass
+    try:
+        search_params()  # no filters
+        assert False, "expected ValueError for no filters"
+    except ValueError:
+        pass
+
+
 if __name__ == "__main__":
     test_fix_deferred_triggers_ndvm()
     test_fixed_reports_rhsa_and_nvra()
     test_not_affected_means_do_nothing()
     test_unknown_product_falls_back_to_worst_state()
     test_ndvm_trigger_rule()
+    test_input_guardrails()
     print("ok")
