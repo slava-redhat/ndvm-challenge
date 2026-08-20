@@ -138,12 +138,14 @@ def report_md(intake: dict, advice: dict) -> str:
     return "\n".join(out)
 
 
-def report_pdf(intake: dict, advice: dict) -> bytes:
-    """Same content as a simple PDF. Core fonts are latin-1, so strip non-latin glyphs."""
+def report_pdf(intake: dict, advice: dict, account: dict | None = None) -> bytes:
+    """PDF with the same section order and labels as render_advice / render_account."""
     from fpdf import FPDF
     from fpdf.enums import XPos, YPos
-    def a(s):  # ponytail: drop emoji/bullets rather than ship a TTF; content stays intact
+
+    def a(s):  # ponytail: core fonts are latin-1; drop emoji rather than ship a TTF
         return (str(s) if s is not None else "").encode("latin-1", "ignore").decode("latin-1")
+
     v = advice.get("vulnerability", {})
     rec = advice.get("recommended_title")
     pdf = FPDF()
@@ -151,68 +153,167 @@ def report_pdf(intake: dict, advice: dict) -> bytes:
     pdf.set_auto_page_break(True, 15)
     pdf.add_page()
 
-    # wrapmode=CHAR breaks long unbreakable tokens (source URLs) instead of crashing;
-    # new_x/new_y reset to the left margin so the next block gets the full page width.
     def h(txt, size=13):
         pdf.set_font("Helvetica", "B", size)
         pdf.multi_cell(0, 7, a(txt), new_x=XPos.LMARGIN, new_y=YPos.NEXT, wrapmode="CHAR")
         pdf.ln(1)
 
-    def p(txt):
-        pdf.set_font("Helvetica", "", 10)
+    def p(txt, size=10, style=""):
+        pdf.set_font("Helvetica", style, size)
         pdf.multi_cell(0, 5, a(txt), new_x=XPos.LMARGIN, new_y=YPos.NEXT, wrapmode="CHAR")
 
-    h(f"NDVM Analysis - {v.get('cve_id','CVE')} ({v.get('threat_severity','?')})", 16)
-    flow = "Customer" if advice.get("persona") == "primary" else "Red Hat TAM"
-    p(f"Audience: {flow}  |  Platform: {intake.get('platform','?')}  |  "
-      f"Constraint: {intake.get('constraint','-') or '-'}")
-    pdf.ln(2)
-    h("Environment"); p(advice.get("environment_summary", ""))
-    pdf.ln(1); h("Vulnerability")
-    p(f"Fix state: {v.get('fix_state','?')}")
-    p(f"CVSS v3: {v.get('cvss3') or '-'}    NDVM applies: {'Yes' if v.get('ndvm_applies') else 'No'}")
+    def adots(n):
+        n = max(0, min(4, int(n or 0)))
+        return "*" * n + "-" * (4 - n)
+
+    def rule():
+        pdf.ln(1)
+        y = pdf.get_y()
+        pdf.set_draw_color(180, 180, 180)
+        pdf.line(15, y, 195, y)
+        pdf.ln(3)
+
+    # --- Router banner (same as st.success in render_advice) ---
+    flow = "Customer flow" if advice.get("persona") == "primary" else "TAM flow"
+    h("NDVM — Non-Disruptive Vulnerability Mitigation", 16)
+    p(f"Router chose: {flow}  ·  platform: {intake.get('platform', '?')}  ·  "
+      f"CVE: {intake.get('cve') or v.get('cve_id', '?')}")
+    rule()
+
+    # --- Account estate (same blocks as render_account) ---
+    if account:
+        h(f"Customer: {account.get('account_name', '')}", 14)
+        p(f"Registered systems: {account.get('estate_size', '?')}    "
+          f"Affected by this CVE: {len((account.get('cve') or {}).get('affected') or [])}    "
+          f"Reboot window: {(account.get('maintenance') or {}).get('next_reboot_window', '-')}")
+        if account.get("assigned_tam"):
+            p(f"Industry: {account.get('industry', '')}  ·  TAM: {account['assigned_tam']}  ·  "
+              f"org {account.get('org_id', '')}", size=9)
+        mw = account.get("maintenance") or {}
+        if mw.get("change_freeze"):
+            p(f"Change policy: {mw['change_freeze']}", size=9)
+        cv = account.get("cve") or {}
+        if cv.get("affected"):
+            h(f"Hosts affected by {cv.get('cve', '')} "
+              f"(severity {cv.get('severity', '?')}, fix_state {cv.get('red_hat_fix_state', '?')}"
+              + (", known-exploited" if cv.get("known_exploited") else "") + ")", 11)
+            for host in cv["affected"]:
+                p(f"  {host.get('hostname', '')}  |  {host.get('status', '')}  |  "
+                  f"{'internet-facing' if host.get('public_exposure') else 'internal'}  |  "
+                  f"{host.get('reason', '')}", size=9)
+        if cv.get("not_affected"):
+            p("Not affected: " + ", ".join(
+                host.get("hostname", "") for host in cv["not_affected"]), size=9)
+        if cv.get("remediation_playbook"):
+            p(f"Insights remediation available: {cv['remediation_playbook']}", size=9)
+        comp = account.get("compliance") or []
+        if comp:
+            h("Compliance (Insights OpenSCAP) — affected hosts", 11)
+            for r in comp:
+                p(f"  {r.get('hostname', '')}  |  {r.get('profile', '')}  |  "
+                  f"{r.get('score', '?')}%  |  "
+                  f"{', '.join(r.get('failed_rules', [])) or '-'}", size=9)
+        rule()
+
+    # --- Vulnerability block (subheader + 3 metrics + priority + rationale + sources) ---
+    h(f"{v.get('cve_id', 'CVE')} — {v.get('threat_severity', '?')}", 14)
+    p(f"Fix state: {v.get('fix_state', '?')}      "
+      f"CVSS: {v.get('cvss3') or '-'}      "
+      f"NDVM applies: {'Yes' if v.get('ndvm_applies') else 'No'}")
     pr = advice.get("priority") or {}
     if pr:
         _, label = TIER_BADGE.get(pr.get("tier", "routine"), ("", "Routine"))
-        p(f"Exploitation urgency: {label}"
-          + (" | known-exploited (CISA KEV)" if pr.get("in_kev") else "")
-          + (f" | EPSS {pr['epss']:.0%}" if pr.get("epss") is not None else ""))
+        bits = [f"Exploitation urgency: {label}"]
+        if pr.get("in_kev"):
+            bits.append("known-exploited (CISA KEV)")
+        if pr.get("epss") is not None:
+            bits.append(f"EPSS {pr['epss']:.0%}")
+        p(" · ".join(bits), style="B")
         if pr.get("rationale"):
             p(pr["rationale"])
-        for s in pr.get("source_urls", []):
-            p(f"source: {src_tag(s)}")
-    if v.get("rhsa"):
-        p(f"Fixing erratum: {v['rhsa']} -> {v.get('fixed_nvra','')}")
     if v.get("rationale"):
         p(v["rationale"])
-    for s in v.get("source_urls", []):
-        p(f"source: {src_tag(s)}")
+    if v.get("rhsa"):
+        p(f"Fixing erratum: {v['rhsa']} -> {v.get('fixed_nvra', '')}")
+    for src in list(v.get("source_urls", [])) + (pr.get("source_urls", []) if pr else []):
+        p(src_tag(src), size=8)
+
+    # --- Controls you already have ---
     controls = advice.get("existing_controls", [])
     if controls:
-        pdf.ln(1); h("Controls you already have")
+        rule()
+        if any(c.get("status") == "mitigated" for c in controls):
+            p("You may already be protected — a control you run mitigates this. See below.",
+              style="B")
+        h("Controls you already have")
         for c in controls:
-            p(f"[{c.get('status','?').replace('_',' ')}] {c.get('control','')}: {c.get('rationale','')}")
-            for s in c.get("source_urls", []):
-                p(f"  source: {src_tag(s)}")
-    if advice.get("business_risk"):
-        pdf.ln(1); h("What this means for your business"); p(advice["business_risk"])
-    pdf.ln(1); h("Mitigation options (ranked)")
-    for o in advice.get("options", []):
-        star = "  [RECOMMENDED]" if o.get("title") == rec else ""
-        h(f"{o.get('title','')}{star}", 11)
-        p(f"disruption: {o.get('disruption','?')}  |  effectiveness: "
-          f"{o.get('effectiveness','?')}/4  |  effort: {o.get('effort','?')}/4"
-          + (f"  |  fit score: {o['score']}" if o.get("score") is not None else ""))
-        if o.get("description"):
-            p(o["description"])
-        for s in o.get("steps", []):
-            p(f"  - {s}")
-        for s in o.get("source_urls", []):
-            p(f"  source: {src_tag(s)}")
-    pdf.ln(1); h("Recommended approach"); p(advice.get("explanation", ""))
+            status = (c.get("status") or "?").replace("_", " ")
+            p(f"[{status}]  {c.get('control', '')}", style="B")
+            if c.get("rationale"):
+                p(c["rationale"])
+            for src in c.get("source_urls", []):
+                p(src_tag(src), size=8)
+            pdf.ln(1)
+
+    # --- Business risk ---
+    risk = advice.get("business_risk")
+    if risk:
+        rule()
+        h("What this means for your business")
+        p(risk)
+
+    # --- Mitigation options (ranked cards) ---
+    rule()
+    h("Mitigation options")
+    for opt in advice.get("options", []):
+        is_rec = opt.get("title") == rec
+        title = opt.get("title", "")
+        h(("RECOMMENDED — " if is_rec else "") + title, 11)
+        p(f"disruption: {opt.get('disruption', '?')}      "
+          f"effectiveness: {adots(opt.get('effectiveness'))} ({opt.get('effectiveness', '?')}/4)      "
+          f"effort: {adots(opt.get('effort'))} ({opt.get('effort', '?')}/4)")
+        if opt.get("score") is not None:
+            p(f"fit score {opt['score']} · ranked by disruption/effectiveness/effort "
+              f"for your constraint (higher = better)", size=9)
+        if opt.get("description"):
+            p(opt["description"])
+        if opt.get("steps"):
+            for s in opt["steps"]:
+                p(f"  - {s}")
+        for src in opt.get("source_urls", []):
+            p(src_tag(src), size=8)
+        pdf.ln(2)
+
+    # --- Recommended approach ---
+    rule()
+    h("Recommended approach")
+    p(advice.get("explanation", ""))
+
+    # --- Playbook ---
     if advice.get("playbook"):
-        h("Playbook"); pdf.set_font("Courier", "", 8)
-        pdf.multi_cell(0, 4, a(advice["playbook"]), wrapmode="CHAR")
+        rule()
+        h("Ansible-style playbook for the recommended option")
+        pdf.set_font("Courier", "", 8)
+        pdf.multi_cell(0, 4, a(advice["playbook"]),
+                       new_x=XPos.LMARGIN, new_y=YPos.NEXT, wrapmode="CHAR")
+
+    # --- Audit trail (same content as render_audit) ---
+    audit = advice.get("audit") or []
+    if audit:
+        rule()
+        total = sum(s.get("ms") or 0 for s in audit)
+        h("How this answer was produced — audit trail"
+          + (f" ({total / 1000:.0f}s)" if total else ""))
+        p("Steps tagged with Python / Red Hat / CISA / FIRST are computed from "
+          "authoritative feeds (never model-guessed).", size=9)
+        for i, s in enumerate(audit, 1):
+            ms = f"  ·  {s['ms'] / 1000:.1f}s" if s.get("ms") else ""
+            p(f"{i}. {s.get('step', '')}  [{s.get('basis', '')}]{ms}", style="B")
+            if s.get("detail"):
+                p(s["detail"], size=9)
+            for src in s.get("sources", []):
+                p(src_tag(src), size=8)
+
     return bytes(pdf.output())
 
 
@@ -381,7 +482,7 @@ def render_account(acc):
                    "failing rules": ", ".join(r.get("failed_rules", [])) or "—"} for r in comp])
 
 
-def render_advice(intake, advice):
+def render_advice(intake, advice, account=None):
     flow = "Customer flow" if advice.get("persona") == "primary" else "TAM flow"
     st.success(f"Router chose: **{flow}**  ·  platform: `{intake.get('platform','?')}`  ·  "
                f"CVE: `{intake.get('cve','?')}`")
@@ -461,7 +562,7 @@ def render_advice(intake, advice):
     dl_md.download_button("⬇️ Download Markdown", data=md, file_name=f"{base}.md",
                           mime="text/markdown", use_container_width=True)
     try:
-        dl_pdf.download_button("⬇️ Download PDF", data=report_pdf(intake, advice),
+        dl_pdf.download_button("⬇️ Download PDF", data=report_pdf(intake, advice, account),
                                file_name=f"{base}.pdf", mime="application/pdf",
                                use_container_width=True)
     except Exception as e:  # PDF is a nice-to-have; never block the page on it
@@ -533,6 +634,6 @@ if ss.get("result"):
         if data.get("account"):
             render_account(data["account"])
         if advice:
-            render_advice(intake, advice)
+            render_advice(intake, advice, data.get("account"))
         else:
             st.warning("No advice produced. Check the CVE id and try again.")

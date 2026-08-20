@@ -21,7 +21,10 @@ DATA = os.environ.get("DATA_DIR", "/app/data")
 SECDATA = "https://access.redhat.com/hydra/rest/securitydata/cve/{cve}.json"
 SEED_CVES = os.environ.get(
     "INGEST_CVES",
-    "CVE-2024-3094,CVE-2023-3390,CVE-2021-44228,CVE-2022-0847",
+    # Demo-account CVEs + common RH-tracked cases (kernel, sshd, log4j, container runtime…)
+    "CVE-2024-3094,CVE-2023-3390,CVE-2024-1086,CVE-2024-6387,CVE-2023-44487,"
+    "CVE-2021-44228,CVE-2022-0847,CVE-2021-4034,CVE-2023-4911,CVE-2023-38545,"
+    "CVE-2024-21626,CVE-2019-5736,CVE-2022-0492,CVE-2022-42889,CVE-2024-2961",
 ).split(",")
 
 

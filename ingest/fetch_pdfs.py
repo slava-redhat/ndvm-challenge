@@ -21,20 +21,41 @@ DATA = Path(__file__).resolve().parent.parent / "data" / "pdfs"
 
 # Curated for the challenge: how to mitigate WITHOUT patching/reboot.
 # title = the product/guide title with spaces -> underscores (that's the filename casing).
+# Only rows that return application/pdf today — probe before adding.
 GUIDES = [
-    # RHEL — the core non-disruptive levers (live patch, SELinux, firewall, update mgmt)
+    # RHEL 9 — core non-disruptive levers
     ("red_hat_enterprise_linux", "Red_Hat_Enterprise_Linux", "9", "security_hardening", "Security_hardening"),
     ("red_hat_enterprise_linux", "Red_Hat_Enterprise_Linux", "9", "using_selinux", "Using_SELinux"),
     ("red_hat_enterprise_linux", "Red_Hat_Enterprise_Linux", "9",
      "configuring_firewalls_and_packet_filters", "Configuring_firewalls_and_packet_filters"),
     ("red_hat_enterprise_linux", "Red_Hat_Enterprise_Linux", "9",
      "managing_and_monitoring_security_updates", "Managing_and_monitoring_security_updates"),
-    # RHEL kernel: kpatch / live patching = reboot-free kernel CVE mitigation
     ("red_hat_enterprise_linux", "Red_Hat_Enterprise_Linux", "9",
      "managing_monitoring_and_updating_the_kernel", "Managing_monitoring_and_updating_the_kernel"),
-    # OpenShift — compensating controls (NetworkPolicy, SCC, admission, node hardening)
+    ("red_hat_enterprise_linux", "Red_Hat_Enterprise_Linux", "9", "securing_networks", "Securing_networks"),
+    ("red_hat_enterprise_linux", "Red_Hat_Enterprise_Linux", "9",
+     "configuring_authentication_and_authorization_in_rhel",
+     "Configuring_authentication_and_authorization_in_RHEL"),
+    ("red_hat_enterprise_linux", "Red_Hat_Enterprise_Linux", "9",
+     "managing_software_with_the_dnf_tool", "Managing_software_with_the_DNF_tool"),
+    # RHEL 8 — still the majority of customer estates in the demo accounts
+    ("red_hat_enterprise_linux", "Red_Hat_Enterprise_Linux", "8", "security_hardening", "Security_hardening"),
+    ("red_hat_enterprise_linux", "Red_Hat_Enterprise_Linux", "8", "using_selinux", "Using_SELinux"),
+    ("red_hat_enterprise_linux", "Red_Hat_Enterprise_Linux", "8",
+     "configuring_and_managing_networking", "Configuring_and_managing_networking"),
+    ("red_hat_enterprise_linux", "Red_Hat_Enterprise_Linux", "8",
+     "managing_monitoring_and_updating_the_kernel", "Managing_monitoring_and_updating_the_kernel"),
+    # OpenShift — NetworkPolicy / SCC / nodes / auth
     ("openshift_container_platform", "OpenShift_Container_Platform", "4.18",
      "security_and_compliance", "Security_and_compliance"),
+    ("openshift_container_platform", "OpenShift_Container_Platform", "4.18",
+     "authentication_and_authorization", "Authentication_and_authorization"),
+    ("openshift_container_platform", "OpenShift_Container_Platform", "4.18", "nodes", "Nodes"),
+    ("openshift_container_platform", "OpenShift_Container_Platform", "4.15",
+     "networking", "Networking"),  # 4.18 networking guide is HTML-only; 4.15 has the PDF
+    # ACS — runtime policy / admission-style compensating controls
+    ("red_hat_advanced_cluster_security_for_kubernetes",
+     "Red_Hat_Advanced_Cluster_Security_for_Kubernetes", "4.6", "operating", "Operating"),
     # Ansible Automation Platform — hardening & compliance
     ("red_hat_ansible_automation_platform", "Red_Hat_Ansible_Automation_Platform", "2.5",
      "hardening_and_compliance", "Hardening_and_compliance"),
