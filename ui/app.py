@@ -513,7 +513,7 @@ elif st.button("Get mitigation options", type="primary") and msg.strip():
 # Render the last produced advice (survives download-button reruns).
 if ss.get("result"):
     data = ss["result"]
-    if data.get("status") == "off_topic":
+    if data.get("status") in ("off_topic", "need_cve"):
         st.warning(data.get("message", "I can only help with security vulnerability mitigation."))
     else:
         intake = data.get("intake", {})

@@ -58,6 +58,12 @@ def classify(kev: bool, epss, severity: str = "") -> tuple[str, str]:
     """Pure tiering — the auditable core. Returns (tier, rationale)."""
     sev = (severity or "").lower()
     pct = f"{epss:.0%}" if epss is not None else "unknown"
+    # Nothing to go on — no KEV, no EPSS, no severity — means the feeds were unreachable
+    # this run, NOT that the CVE is low risk. Say so plainly instead of implying "routine".
+    if not kev and epss is None and sev in ("", "unknown"):
+        return "routine", ("Risk could not be assessed — the CISA KEV / FIRST EPSS / Red Hat "
+                           "feeds were unreachable during this run. Re-run to get an "
+                           "exploitation rating; do NOT treat this as low risk.")
     if kev:
         return "act_now", (f"Listed in CISA KEV — actively exploited in the wild "
                            f"(EPSS {pct}). Treat as an emergency change even under a freeze.")
@@ -154,6 +160,12 @@ if __name__ == "__main__":  # self-check for the pure classifier (no network nee
     assert classify(False, 0.02, "Moderate")[0] == "scheduled"
     assert classify(False, None, "Important")[0] == "scheduled"
     assert classify(False, 0.0, "Low")[0] == "routine"
+    # total feed outage: honest "could not assess", never a confident low-risk verdict
+    assert "could not be assessed" in classify(False, None, "")[1]
+    assert "could not be assessed" in classify(False, None, "unknown")[1]
+    # a known severity (or any EPSS/KEV) still rates normally, not the outage message
+    assert "could not be assessed" not in classify(False, None, "Important")[1]
+    assert "could not be assessed" not in classify(False, 0.0, "")[1]
     assert priority_note({"tier": "act_now", "in_kev": True, "epss": 0.94,
                           "epss_percentile": 0.99}).startswith("urgency tier: act_now")
     # compliance risk modifier

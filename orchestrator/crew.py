@@ -31,7 +31,7 @@ except Exception:  # pragma: no cover - internal API, tolerate its absence
 
 from accounts import (account_view, default_cve, detect_account, estate_as_answers,
                       load_account)
-from cve_parse import ndvm_applies_for
+from cve_parse import ndvm_applies_for, valid_cve
 from llm import get_llm
 import progress
 from playbook import build_playbook
@@ -180,6 +180,10 @@ def run_router(message: str, forced_persona: str = "") -> Intake:
     intake: Intake = out.pydantic
     if forced_persona in ("primary", "secondary"):
         intake.persona = forced_persona  # UI override wins
+    # The router LLM fills 'unknown'/'n/a' when the message names no CVE. Blank any
+    # non-CVE value so research runs instead of analyzing the literal string.
+    if not valid_cve(intake.cve):
+        intake.cve = ""
     return intake
 
 
@@ -319,7 +323,12 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
     researched = not intake.cve.strip()
     if researched:
         progress.emit("Discovering the CVE in Red Hat's catalog")
-        intake = intake.model_copy(update={"cve": run_research(intake).cve})
+        found = run_research(intake).cve
+        intake = intake.model_copy(update={"cve": found if valid_cve(found) else ""})
+    if not valid_cve(intake.cve):
+        # No CVE given and none discoverable from the stated product — don't fabricate an
+        # all-"unknown" analysis; ask for a valid CVE (advise() turns this into need_cve).
+        return {"needs_cve": True}
 
     # Prioritization facts (KEV + EPSS) — computed in Python, not LLM-guessed. Fed into
     # the ranking/risk prompts as a note; the final signal is pinned onto the result below.
@@ -436,7 +445,10 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
             "terms — {priority_note} — e.g. 'attackers are already exploiting this' if "
             "known-exploited. Do not invent impact beyond the severity, exposure and this "
             "urgency established above. Fill options from this ranking:\n---\n{strategy}\n---\n"
-            "each with disruption, effectiveness (1-4), effort (1-4) and source_urls. Write a "
+            "each with disruption, effectiveness (1-4), effort (1-4) and source_urls. Do NOT "
+            "include a 'confirm/verify not affected (VEX)' option, and do not mention VEX in "
+            "the explanation, UNLESS the analyst finding's fix_state is exactly 'Not affected'. "
+            "Write a "
             "clear explanation of the trade-offs that favours the LEAST DISRUPTIVE option "
             "that is still effective for the constraint '{constraint}' (the options are "
             "re-ranked deterministically by a disruption-weighted score afterwards, so keep "
@@ -596,5 +608,10 @@ def advise(message: str, forced_persona: str = "", answers: str = "",
         return {"intake": s.intake.model_dump(), "status": "need_info", "advice": None,
                 "missing": s.gate.missing,
                 "questions": [q.model_dump() for q in s.gate.questions]}
+    if isinstance(s.result, dict) and s.result.get("needs_cve"):
+        return {"intake": s.intake.model_dump(), "status": "need_cve", "advice": None,
+                "message": ("I couldn't determine a specific CVE from your request. Please "
+                            "give me a CVE id (format CVE-YYYY-NNNN) — or name the exact "
+                            "product/package so I can look one up.")}
     return {"intake": s.intake.model_dump(), "status": "ok", "advice": s.result,
             "account": s.account_view}
