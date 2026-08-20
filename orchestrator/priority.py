@@ -74,6 +74,54 @@ def classify(kev: bool, epss, severity: str = "") -> tuple[str, str]:
                        f"{severity or 'n/a'}). Handle in the routine cycle.")
 
 
+_TIERS = ["routine", "scheduled", "prioritize", "act_now"]  # low -> high urgency
+
+
+def compliance_signal(comp_rows: list) -> dict:
+    """Turn Insights OpenSCAP posture for the affected hosts into a risk modifier.
+
+    Compliance is estate posture, not a threat feed: a weak hardening score / a failing
+    security rule means the compensating controls that would blunt this CVE are NOT in
+    force here, so residual exposure is HIGHER (delta +1). A strong, clean posture means
+    the estate is already hardened, so residual risk is LOWER (delta -1). Pure; no network.
+
+    comp_rows: [{hostname, score, failed_rules, ...}] from accounts.compliance_view.
+    """
+    rows = [r for r in (comp_rows or []) if isinstance(r.get("score"), (int, float))]
+    if not rows:
+        return {"posture": "unknown", "min_score": None, "failed_rules": [], "delta": 0}
+    min_score = min(r["score"] for r in rows)
+    failed = sorted({f for r in comp_rows for f in (r.get("failed_rules") or [])})
+    if min_score < 70 or failed:
+        posture, delta = "weak", 1
+    elif min_score >= 90:
+        posture, delta = "strong", -1
+    else:
+        posture, delta = "adequate", 0
+    return {"posture": posture, "min_score": min_score, "failed_rules": failed, "delta": delta}
+
+
+def adjust_tier(tier: str, delta: int, kev: bool = False) -> str:
+    """Shift the urgency tier by posture. Escalation always allowed; de-escalation never
+    for a KEV-listed CVE (actively exploited outranks good hygiene)."""
+    if delta == 0 or (delta < 0 and kev):
+        return tier
+    i = _TIERS.index(tier) if tier in _TIERS else 0
+    return _TIERS[max(0, min(len(_TIERS) - 1, i + (1 if delta > 0 else -1)))]
+
+
+def compliance_note(csig: dict) -> str:
+    """Audit sentence explaining how compliance posture moved the tier."""
+    if csig["delta"] > 0:
+        rules = ", ".join(csig["failed_rules"]) or "hardening gaps"
+        return (f"Compliance posture WEAK (OpenSCAP min {csig['min_score']}%, failing: {rules}) "
+                f"— compensating controls not fully in force, so exposure is higher: urgency raised.")
+    if csig["delta"] < 0:
+        return (f"Compliance posture STRONG (OpenSCAP min {csig['min_score']}%, no failing rules) "
+                f"— the estate is already hardened, so residual risk is lower: urgency eased.")
+    return ""
+
+
 def assess(cve: str, severity: str = "", kev_hint: bool = False) -> dict:
     """Build the ExploitSignal-shaped dict for a CVE. kev_hint lets an account's own
     known_exploited flag stand in when the live feed is unreachable."""
@@ -108,4 +156,16 @@ if __name__ == "__main__":  # self-check for the pure classifier (no network nee
     assert classify(False, 0.0, "Low")[0] == "routine"
     assert priority_note({"tier": "act_now", "in_kev": True, "epss": 0.94,
                           "epss_percentile": 0.99}).startswith("urgency tier: act_now")
+    # compliance risk modifier
+    weak = compliance_signal([{"score": 55, "failed_rules": ["selinux_state_enforcing"]}])
+    assert weak["delta"] == 1 and weak["posture"] == "weak"
+    strong = compliance_signal([{"score": 95, "failed_rules": []},
+                                {"score": 92, "failed_rules": []}])
+    assert strong["delta"] == -1
+    assert compliance_signal([])["delta"] == 0                 # no data -> no change
+    assert adjust_tier("scheduled", 1) == "prioritize"          # weak posture escalates
+    assert adjust_tier("prioritize", -1) == "scheduled"         # strong posture eases
+    assert adjust_tier("act_now", -1, kev=True) == "act_now"    # KEV never de-escalates
+    assert adjust_tier("act_now", 1) == "act_now"               # can't exceed the top tier
+    assert compliance_note(weak).startswith("Compliance posture WEAK")
     print("ok")

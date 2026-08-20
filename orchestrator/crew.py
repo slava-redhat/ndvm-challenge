@@ -34,9 +34,11 @@ from accounts import (account_view, default_cve, detect_account, estate_as_answe
 from cve_parse import ndvm_applies_for
 from llm import get_llm
 import progress
+from playbook import build_playbook
 from models import (AdviceResult, ControlReport, CveChoice, ExploitSignal, Intake,
                     Sufficiency)
-from priority import assess, classify, priority_note
+from priority import (adjust_tier, assess, classify, compliance_note,
+                      compliance_signal, priority_note)
 from scoring import rank_options
 from tools import RagSearchTool, RedHatCveSearchTool, RedHatSecurityDataTool
 
@@ -304,7 +306,14 @@ def _audit_trail(intake: Intake, persona: str, researched: bool, sig: dict,
     return trail
 
 
-def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
+def _is_vex_option(o) -> bool:
+    """A 'confirm not affected via VEX' option — valid only when fix_state is Not affected."""
+    t = (o.title or "").lower()
+    return (o.action_type or "").lower() == "verify" or "vex" in t or "not affected" in t
+
+
+def run_advice(intake: Intake, persona: str, answers: str = "",
+               compliance: list | None = None) -> dict:
     # Pin the CVE deterministically: use the one the customer gave, else research once
     # and lock the pick in Python so the Analyst can't switch to a different CVE.
     researched = not intake.cve.strip()
@@ -432,8 +441,8 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
             "that is still effective for the constraint '{constraint}' (the options are "
             "re-ranked deterministically by a disruption-weighted score afterwards, so keep "
             "your explanation consistent with that preference and set recommended_title "
-            "accordingly). If the recommended option is automatable, put a short Ansible-style "
-            "snippet in 'playbook'."
+            "accordingly). Leave 'playbook' null — NDVM generates the Ansible playbook "
+            "deterministically from the chosen option after you rank them."
         ),
         expected_output="A complete AdviceResult.",
         agent=synth,
@@ -451,13 +460,37 @@ def run_advice(intake: Intake, persona: str, answers: str = "") -> dict:
     # (never LLM-guessed) so the UI badge and ranking rest on the auditable feeds.
     sig["tier"], sig["rationale"] = classify(sig["in_kev"], sig["epss"],
                                              result.vulnerability.threat_severity)
+    # Compliance posture (Insights OpenSCAP) is the estate side of risk: weak hardening on
+    # the affected hosts means the compensating controls aren't in force, so shift the tier.
+    csig = compliance_signal(compliance or [])
+    if csig["delta"]:
+        sig["tier"] = adjust_tier(sig["tier"], csig["delta"], sig["in_kev"])
+        sig["rationale"] = (sig["rationale"] + " " + compliance_note(csig)).strip()
+    sig["compliance"] = csig
     result.priority = ExploitSignal(**sig)
     # Deterministic option ranking: order + recommendation are a pure function of each
     # option's disruption/effectiveness/effort (auditable, reproducible) — the LLM keeps the
     # explanation. Weighted by the customer's uptime constraint and exploitation urgency.
     if result.options:
+        # "Confirm not affected via VEX" scores maximally (none/effective/cheap), so it
+        # otherwise wins every ranking — but it only makes sense when Red Hat actually says
+        # Not affected. For any other fix_state it contradicts the authoritative status; drop
+        # it (guarded so we never empty the option list).
+        if result.vulnerability.fix_state != "Not affected":
+            kept = [o for o in result.options if not _is_vex_option(o)]
+            if kept:
+                result.options = kept
         rank_options(result.options, intake.constraint, urgent=sig["tier"] in ("act_now", "prioritize"))
-        result.recommended_title = result.options[0].title
+        rec = result.options[0]
+        result.recommended_title = rec.title
+        # Playbook is a trust-critical artifact: build it in Python from the ranked
+        # recommendation (never the LLM's free text), same rule as scoring/priority.
+        v = result.vulnerability
+        result.playbook = build_playbook(
+            platform=result.platform, action_type=rec.action_type, title=rec.title,
+            steps=rec.steps, source_urls=rec.source_urls, cve=v.cve_id,
+            fix_state=v.fix_state, rhsa=v.rhsa or "", product=intake.product,
+            version=intake.version)
     d = result.model_dump()
     # Audit trail rides in the payload: shown in the UI and persisted via the existing
     # recommendation table (its payload JSON), so the answer's provenance is inspectable.
@@ -534,11 +567,17 @@ class NDVMFlow(Flow[NDVMState]):
 
     @listen("primary")
     def primary_flow(self):
-        self.state.result = run_advice(self.state.intake, "primary", self.state.answers)
+        self.state.result = run_advice(self.state.intake, "primary", self.state.answers,
+                                       self._compliance())
 
     @listen("secondary")
     def secondary_flow(self):
-        self.state.result = run_advice(self.state.intake, "secondary", self.state.answers)
+        self.state.result = run_advice(self.state.intake, "secondary", self.state.answers,
+                                       self._compliance())
+
+    def _compliance(self):
+        """OpenSCAP rows for the affected hosts, if an account estate was loaded."""
+        return (self.state.account_view or {}).get("compliance")
 
 
 def advise(message: str, forced_persona: str = "", answers: str = "",

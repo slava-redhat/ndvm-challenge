@@ -62,6 +62,7 @@ class ExploitSignal(BaseModel):
     tier: Literal["act_now", "prioritize", "scheduled", "routine"] = "routine"
     rationale: str = ""
     source_urls: List[str] = []
+    compliance: Optional[dict] = None          # OpenSCAP posture modifier (priority.compliance_signal)
 
 
 class ControlAssessment(BaseModel):
