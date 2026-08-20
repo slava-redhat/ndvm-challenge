@@ -1,20 +1,38 @@
 """Postgres + pgvector access: RAG search over doc_chunk + audit writes."""
 import json
 import os
+from contextlib import contextmanager
 
 import psycopg
+from psycopg_pool import ConnectionPool
 
 from embeddings import embed
 
+_pool: ConnectionPool | None = None
 
-def _conn():
-    return psycopg.connect(
-        host=os.environ.get("PGHOST", "db"),
-        port=os.environ.get("PGPORT", "5432"),
-        dbname=os.environ["POSTGRES_DB"],
-        user=os.environ["POSTGRES_USER"],
-        password=os.environ["POSTGRES_PASSWORD"],
+
+def _pool_conninfo() -> str:
+    return (
+        f"host={os.environ.get('PGHOST', 'db')} "
+        f"port={os.environ.get('PGPORT', '5432')} "
+        f"dbname={os.environ['POSTGRES_DB']} "
+        f"user={os.environ['POSTGRES_USER']} "
+        f"password={os.environ['POSTGRES_PASSWORD']}"
     )
+
+
+def _get_pool() -> ConnectionPool:
+    global _pool
+    if _pool is None:
+        # ponytail: sized for uvicorn + Crew wave threads; raise if advise concurrency grows
+        _pool = ConnectionPool(conninfo=_pool_conninfo(), min_size=1, max_size=8, open=True)
+    return _pool
+
+
+@contextmanager
+def _conn():
+    with _get_pool().connection() as c:
+        yield c
 
 
 def _vec_literal(v: list[float]) -> str:
@@ -22,12 +40,11 @@ def _vec_literal(v: list[float]) -> str:
 
 
 def rag_search(query: str, platform: str | None = None, k: int = 6) -> list[dict]:
-    """Semantic search with an optional exact platform filter (personalization)."""
-    qvec = _vec_literal(embed(query))
+    """Dense-only search (eval helper). Production uses rag_search_hybrid."""
+    qvec = _vec_literal(embed(query, task="search_query"))
     sql = "SELECT text, source_url, metadata FROM doc_chunk"
     params: list = []
     if platform and platform != "other":
-        # match this platform OR platform-agnostic docs
         sql += " WHERE metadata->>'platform' IN (%s, 'any')"
         params.append(platform)
     sql += " ORDER BY embedding <=> %s::vector LIMIT %s"
@@ -41,10 +58,8 @@ def rag_search(query: str, platform: str | None = None, k: int = 6) -> list[dict
 
 
 RRF_K = 60  # standard Reciprocal Rank Fusion constant
-# Curated mitigation-catalog chunks are the vetted, scored, source-cited option menu
-# the retriever exists to surface; PDF prose is supporting depth. Give the catalog a
-# small prior worth ~one top rank, applied ONLY to chunks already retrieved as
-# relevant (never injects an off-topic option). Not tuned to the eval set.
+# Curated mitigation-catalog chunks get a small prior worth ~one top rank, applied
+# ONLY to chunks already retrieved by dense∪lexical (never injects off-topic options).
 CURATED_BOOST = 1.0 / (RRF_K + 1)
 
 
@@ -57,7 +72,7 @@ def rag_search_hybrid(query: str, platform: str | None = None, k: int = 6,
     calibration between cosine distance and ts_rank is needed. Same platform filter
     as the dense path (personalization). No new dependency — all in the DB we run.
     """
-    qvec = _vec_literal(embed(query))
+    qvec = _vec_literal(embed(query, task="search_query"))
     where, params = "", []
     if platform and platform != "other":
         where = " WHERE metadata->>'platform' IN (%s, 'any')"
@@ -66,33 +81,20 @@ def rag_search_hybrid(query: str, platform: str | None = None, k: int = 6,
         cur.execute(f"SELECT id FROM doc_chunk{where} "
                     f"ORDER BY embedding <=> %s::vector LIMIT %s", params + [qvec, pool])
         dense = [r[0] for r in cur.fetchall()]
-        # lexical: skip rows with no lexeme match; empty query (all stopwords) -> no rows
+        # lexical: one plainto_tsquery via CTE; empty query (all stopwords) -> no rows
         lex_where = (where + " AND" if where else " WHERE")
-        cur.execute(f"SELECT id FROM doc_chunk{lex_where} "
-                    f"tsv @@ plainto_tsquery('english', %s) "
-                    f"ORDER BY ts_rank_cd(tsv, plainto_tsquery('english', %s)) DESC LIMIT %s",
-                    params + [query, query, pool])
+        cur.execute(
+            f"WITH q AS (SELECT plainto_tsquery('english', %s) AS tsq) "
+            f"SELECT id FROM doc_chunk{lex_where} tsv @@ (SELECT tsq FROM q) "
+            f"ORDER BY ts_rank_cd(tsv, (SELECT tsq FROM q)) DESC LIMIT %s",
+            params + [query, pool])
         lexical = [r[0] for r in cur.fetchall()]
-        # Curated catalog ranked on its OWN — the option menu is ~10 vetted chunks, and
-        # PDF prose (thousands of chunks) can push every catalog entry past the global
-        # top-`pool`, so it never becomes a candidate and CURATED_BOOST (which only lifts
-        # already-retrieved chunks) can't act. Rank the catalog by itself so the best-
-        # matching option is always in the fusion, then boost it like before.
-        mit_where = "WHERE metadata->>'doc_type' = 'mitigation'"
-        mit_params: list = []
-        if platform and platform != "other":
-            mit_where += " AND metadata->>'platform' IN (%s, 'any')"
-            mit_params = [platform]
-        cur.execute(f"SELECT id FROM doc_chunk {mit_where} "
-                    f"ORDER BY embedding <=> %s::vector LIMIT %s", mit_params + [qvec, pool])
-        curated = [r[0] for r in cur.fetchall()]
         scores: dict = {}
-        for ranked in (dense, lexical, curated):
+        for ranked in (dense, lexical):
             for rank, doc_id in enumerate(ranked, 1):
                 scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (RRF_K + rank)
         if not scores:
             return []
-        # Boost curated catalog chunks that are already candidates, then pick top k.
         cand = list(scores)
         cur.execute("SELECT id, text, source_url, metadata FROM doc_chunk WHERE id = ANY(%s)",
                     (cand,))

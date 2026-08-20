@@ -13,7 +13,10 @@ from crew import advise
 from db import save_recommendation
 from priority import assess
 
-_TIER_ORDER = {"act_now": 0, "prioritize": 1, "scheduled": 2, "routine": 3}
+# unknown sorts with prioritize (fail-closed) — never below routine
+_TIER_ORDER = {"act_now": 0, "prioritize": 1, "unknown": 1, "scheduled": 2, "routine": 3}
+MAX_GATE_ROUNDS = 2
+_ADVISE_SLOTS = threading.Semaphore(4)  # bound concurrent CrewAI graphs
 
 app = FastAPI(title="NDVM Orchestrator")
 
@@ -23,6 +26,7 @@ class AdviseReq(BaseModel):
     persona: str | None = None  # "primary" | "secondary" | None (let the router decide)
     answers: str | None = None  # tick-box answers gathered from the sufficiency gate
     force: bool = False         # skip the gate (client ran out of question rounds)
+    round: int = 0              # server-side gate cap (force when >= MAX_GATE_ROUNDS)
     account: str | None = None  # TAM-selected customer account (name or org id)
 
 
@@ -63,47 +67,98 @@ def _persist(result: dict) -> None:
     if result.get("advice"):
         try:
             save_recommendation(result["advice"])
-        except Exception:
-            pass  # ponytail: audit is best-effort; never fail the user's answer over it
+        except Exception as e:
+            print(f"[persist] audit write failed: {type(e).__name__}: {e}", flush=True)
+
+
+def _effective_force(req: AdviseReq) -> bool:
+    return bool(req.force or req.round >= MAX_GATE_ROUNDS)
 
 
 @app.post("/advise")
 def advise_ep(req: AdviseReq):
-    result = advise(req.message, req.persona or "", req.answers or "", req.force,
-                    req.account or "")
-    _persist(result)
-    return result
+    if not _ADVISE_SLOTS.acquire(blocking=False):
+        return {"status": "error", "advice": None,
+                "message": "orchestrator busy — retry shortly"}
+    try:
+        try:
+            result = advise(req.message, req.persona or "", req.answers or "",
+                            _effective_force(req), req.account or "")
+        except Exception as e:
+            return {"status": "error", "advice": None,
+                    "message": f"{type(e).__name__}: {e}"}
+        _persist(result)
+        return result
+    finally:
+        _ADVISE_SLOTS.release()
 
 
 @app.post("/advise_stream")
 def advise_stream_ep(req: AdviseReq):
     """Same as /advise, but streams NDJSON progress events as the flow runs
-    ({"type":"step",...}) and ends with {"type":"result",...} (or "error"). Lets the UI
-    show the real audit trail live instead of an opaque spinner. The flow runs in a
-    worker thread; step labels drain through a queue."""
-    q: queue.Queue = queue.Queue()
+    ({"type":"step",...}, {"type":"ping",...}) and ends with {"type":"result",...}
+    (or "error"). Disconnect sets cancel so the worker stops between phases."""
+    if not _ADVISE_SLOTS.acquire(blocking=False):
+        def busy():
+            yield json.dumps({"type": "error",
+                              "message": "orchestrator busy — retry shortly"}) + "\n"
+        return StreamingResponse(busy(), media_type="application/x-ndjson")
+
+    q: queue.Queue = queue.Queue(maxsize=64)
     box: dict = {}
+    cancel = threading.Event()
+
+    def _put(item) -> None:
+        if cancel.is_set():
+            return
+        try:
+            q.put_nowait(item)
+        except queue.Full:
+            pass
 
     def worker():
         try:
-            with progress.using(q.put):  # emit(step) -> q.put(step); contextvar-scoped
-                box["result"] = advise(req.message, req.persona or "", req.answers or "",
-                                       req.force, req.account or "")
-        except Exception as e:  # surface the failure to the client, don't hang the stream
-            box["error"] = f"{type(e).__name__}: {e}"
+            with progress.using(_put, cancel=cancel):
+                box["result"] = advise(
+                    req.message, req.persona or "", req.answers or "",
+                    _effective_force(req), req.account or "")
+        except Exception as e:
+            if not cancel.is_set():
+                box["error"] = f"{type(e).__name__}: {e}"
         finally:
-            q.put(None)  # sentinel: flow finished
+            try:
+                q.put_nowait(None)
+            except queue.Full:
+                pass
+            _ADVISE_SLOTS.release()
 
     threading.Thread(target=worker, daemon=True).start()
 
     def gen():
-        while (step := q.get()) is not None:
-            yield json.dumps({"type": "step", "step": step}) + "\n"
-        if "error" in box:
-            yield json.dumps({"type": "error", "message": box["error"]}) + "\n"
-            return
-        result = box.get("result") or {}
-        _persist(result)
-        yield json.dumps({"type": "result", "data": result}) + "\n"
+        try:
+            while True:
+                try:
+                    step = q.get(timeout=15)
+                except queue.Empty:
+                    if cancel.is_set():
+                        return
+                    yield json.dumps({"type": "ping"}) + "\n"
+                    continue
+                if step is None:
+                    break
+                yield json.dumps({"type": "step", "step": step}) + "\n"
+            if cancel.is_set():
+                return
+            if "error" in box:
+                yield json.dumps({"type": "error", "message": box["error"]}) + "\n"
+                return
+            result = box.get("result") or {}
+            _persist(result)
+            yield json.dumps({"type": "result", "data": result}) + "\n"
+        except GeneratorExit:
+            cancel.set()
+            raise
+        finally:
+            cancel.set()
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")

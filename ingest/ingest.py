@@ -15,7 +15,7 @@ import requests
 import yaml
 from pypdf import PdfReader
 
-from embeddings import embed, ensure_model
+from embeddings import embed, embed_batch, ensure_model
 
 DATA = os.environ.get("DATA_DIR", "/app/data")
 SECDATA = "https://access.redhat.com/hydra/rest/securitydata/cve/{cve}.json"
@@ -76,12 +76,16 @@ def drop_chunks(cur, source):
     cur.execute("DELETE FROM doc_chunk WHERE metadata->>'source' = %s", (source,))
 
 
-def add_chunk(cur, text, source_url, platform, doc_type, source):
-    meta = json.dumps({"platform": platform, "doc_type": doc_type, "source": source})
+def add_chunk(cur, text, source_url, platform, doc_type, source, embedding=None,
+              extra_meta: dict | None = None):
+    meta = {"platform": platform, "doc_type": doc_type, "source": source}
+    if extra_meta:
+        meta.update(extra_meta)
+    emb = embedding if embedding is not None else embed(text, task="search_document")
     cur.execute(
         "INSERT INTO doc_chunk (text, source_url, metadata, embedding) "
         "VALUES (%s, %s, %s::jsonb, %s::vector)",
-        (text, source_url, meta, vec(embed(text))),
+        (text, source_url, json.dumps(meta), vec(emb)),
     )
 
 
@@ -94,23 +98,23 @@ def load_mitigations(cur):
         doc = yaml.safe_load(raw)
         platform = doc["platform"]
         drop_chunks(cur, src)
-        cur.execute("DELETE FROM mitigation WHERE platform=%s", (platform,))
-        n = 0
+        # Structured scores live in doc_chunk.metadata (runtime RAG); skip write-only
+        # mitigation table — Makefile stats count mitigation chunks instead.
+        rows = []
         for m in doc["mitigations"]:
-            cur.execute(
-                "INSERT INTO mitigation (platform, title, action_type, description, "
-                "disruption, effectiveness, effort, applies_when, source_url) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (platform, m["title"], m["action_type"], m["description"],
-                 m["disruption"], m["effectiveness"], m["effort"],
-                 m.get("applies_when", ""), m.get("source_url", "")),
-            )
             text = f"{m['title']} ({m['action_type']}, disruption={m['disruption']}). " \
                    f"{m['description']} Applies when: {m.get('applies_when','')}"
-            add_chunk(cur, text, m.get("source_url", ""), platform, "mitigation", src)
-            n += 1
-        mark(cur, src, "mitigation", digest, n)
-        print(f"mitigations loaded: {src} ({n})")
+            rows.append((text, m))
+        vecs = embed_batch([t for t, _ in rows], task="search_document")
+        for (text, m), emb in zip(rows, vecs):
+            add_chunk(cur, text, m.get("source_url", ""), platform, "mitigation", src,
+                      embedding=emb,
+                      extra_meta={"title": m["title"], "action_type": m["action_type"],
+                                  "disruption": m["disruption"],
+                                  "effectiveness": m["effectiveness"],
+                                  "effort": m["effort"]})
+        mark(cur, src, "mitigation", digest, len(rows))
+        print(f"mitigations loaded: {src} ({len(rows)})")
 
 
 def chunk(text: str, size: int = 800, overlap: int = 100):
@@ -133,12 +137,12 @@ def load_pdfs(cur):
             print(f"skip {src}: {e}"); continue
         full = "\n".join((p.extract_text() or "") for p in reader.pages)
         drop_chunks(cur, src)
-        n = 0
-        for c in chunk(full):
-            if c.strip():
-                add_chunk(cur, c, src, "any", "pdf", src); n += 1
-        mark(cur, src, "pdf", digest, n)
-        print(f"pdf loaded: {src} ({n} chunks)")
+        texts = [c for c in chunk(full) if c.strip()]
+        vecs = embed_batch(texts, task="search_document") if texts else []
+        for t, emb in zip(texts, vecs):
+            add_chunk(cur, t, src, "any", "pdf", src, embedding=emb)
+        mark(cur, src, "pdf", digest, len(texts))
+        print(f"pdf loaded: {src} ({len(texts)} chunks)")
 
 
 def load_cves(cur):
@@ -156,7 +160,8 @@ def load_cves(cur):
             print(f"unchanged: {cve}"); continue
         sev = data.get("threat_severity", "unknown")
         try:
-            cvss = float(data.get("cvss3", {}).get("cvss3_base_score"))
+            raw = (data.get("cvss3") or {}).get("cvss3_base_score")
+            cvss = float(raw) if raw is not None else None
         except (TypeError, ValueError):
             cvss = None
         summary = (data.get("bugzilla", {}) or {}).get("description") or \

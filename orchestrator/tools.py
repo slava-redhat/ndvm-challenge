@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from cve_parse import analyze_cve_json, search_params, slim_rows, valid_cve
 from db import rag_search_hybrid
+from models import VulnFinding
 
 SECDATA = "https://access.redhat.com/hydra/rest/securitydata/cve/{cve}.json"
 CVE_LIST = "https://access.redhat.com/hydra/rest/securitydata/cve.json"
@@ -27,6 +28,24 @@ def _fetch_cve_json(cve: str):
     return r.json()
 
 
+def lookup_vuln_finding(cve: str, product: str = "") -> VulnFinding:
+    """Authoritative VulnFinding from Red Hat JSON — Python-owned, never LLM-copied."""
+    cve = (cve or "").strip()
+    if not valid_cve(cve):
+        return VulnFinding(cve_id=cve, fix_state="unknown",
+                           rationale=f"not a valid CVE id: '{cve}'", ndvm_applies=True)
+    try:
+        data = _fetch_cve_json(cve.upper())
+    except requests.RequestException as e:
+        return VulnFinding(cve_id=cve.upper(), fix_state="unknown",
+                           rationale=f"Red Hat Security Data unreachable: {e}",
+                           ndvm_applies=True)
+    if data is None:
+        return VulnFinding(cve_id=cve.upper(), fix_state="unknown",
+                           rationale="CVE not found in Red Hat data", ndvm_applies=True)
+    return VulnFinding(**analyze_cve_json(data, product))
+
+
 class SecDataInput(BaseModel):
     cve: str = Field(description="CVE id, e.g. CVE-2023-3390")
     product: str = Field(default="", description="product name hint, e.g. 'Red Hat Enterprise Linux 8'")
@@ -43,16 +62,7 @@ class RedHatSecurityDataTool(BaseTool):
     args_schema: Type[BaseModel] = SecDataInput
 
     def _run(self, cve: str, product: str = "") -> str:
-        cve = cve.strip()
-        if not valid_cve(cve):  # trust boundary: don't fetch a garbage id
-            return json.dumps({"error": f"not a valid CVE id: '{cve}'", "cve_id": cve})
-        try:
-            data = _fetch_cve_json(cve)
-        except requests.RequestException as e:
-            return json.dumps({"error": f"request failed: {e}", "cve_id": cve})
-        if data is None:
-            return json.dumps({"error": "CVE not found in Red Hat data", "cve_id": cve})
-        return json.dumps(analyze_cve_json(data, product))
+        return lookup_vuln_finding(cve, product).model_dump_json()
 
 
 class CveSearchInput(BaseModel):
@@ -109,7 +119,11 @@ class RagSearchTool(BaseTool):
     args_schema: Type[BaseModel] = RagInput
 
     def _run(self, query: str, platform: str = "") -> str:
-        hits = rag_search_hybrid(query, platform or None)
+        try:
+            hits = rag_search_hybrid(query, platform or None)
+        except Exception as e:
+            # ponytail: Ollama/DB down → empty grounded list, don't kill the wave
+            return f"Knowledge base unavailable ({type(e).__name__}: {e}). No grounded mitigations."
         if not hits:
             return "No grounded mitigations found in the knowledge base."
         return "\n\n".join(

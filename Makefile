@@ -35,7 +35,7 @@ reingest: ## Force full rebuild: clear the corpus and re-embed everything
 stats: ## Corpus totals (chunks / mitigations / cves)
 	@$(DC) exec -T db psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -c \
 	  "SELECT (SELECT count(*) FROM doc_chunk) AS chunks, \
-	          (SELECT count(*) FROM mitigation) AS mitigations, \
+	          (SELECT count(*) FROM doc_chunk WHERE metadata->>'doc_type'='mitigation') AS mitigations, \
 	          (SELECT count(*) FROM cve) AS cves;"
 
 sources: ## Show exactly what has been ingested (the ledger)

@@ -1,11 +1,12 @@
 """CrewAI agents + tasks + the router Flow.
 
 Flow: triage(Router) -> @router(persona) -> primary|secondary crew.
-Both personas share the analysis agents (analyst, retriever, validator, strategist)
+Both personas share the analysis agents (retriever, validator, strategist)
 and differ only in the final synthesizer (Customer Advisor vs TAM Briefer).
 
-run_advice fans the analysis out in three waves for latency: [analyst ‖ retriever] ->
-[validator ‖ strategist] -> synth (see _kick). Mechanical agents run on the fast LLM tier.
+Vulnerability facts are pinned in Python from Red Hat Security Data (never LLM-copied).
+run_advice fans work out: [pin ‖ retrieve] -> [validator ‖ strategist] -> synth.
+Mechanical agents run on the fast LLM tier.
 """
 import os as _os
 
@@ -31,21 +32,29 @@ except Exception:  # pragma: no cover - internal API, tolerate its absence
 
 from accounts import (account_view, default_cve, detect_account, estate_as_answers,
                       load_account)
-from cve_parse import ndvm_applies_for, valid_cve
+from cve_parse import valid_cve
 from llm import get_llm
 import progress
 from playbook import build_playbook
 from models import (AdviceResult, ControlReport, CveChoice, ExploitSignal, Intake,
-                    Sufficiency)
+                    Sufficiency, VulnFinding)
 from priority import (adjust_tier, assess, classify, compliance_note,
                       compliance_signal, priority_note)
 from scoring import rank_options
-from tools import RagSearchTool, RedHatCveSearchTool, RedHatSecurityDataTool
+from tools import RagSearchTool, RedHatCveSearchTool, lookup_vuln_finding
 
-LLM = get_llm()
-SEC_TOOL = RedHatSecurityDataTool()
-SEARCH_TOOL = RedHatCveSearchTool()
-RAG_TOOL = RagSearchTool()
+_WAVE_TIMEOUT = float(_os.environ.get("NDVM_WAVE_TIMEOUT", "180"))
+
+
+def _esc(s: str) -> str:
+    """Break {token} shapes so CrewAI interpolate_only cannot rewrite injected text."""
+    return (s or "").replace("{", "(").replace("}", ")")
+
+
+def _require_pydantic(out, label: str):
+    if out is None or getattr(out, "pydantic", None) is None:
+        raise RuntimeError(f"{label}: structured LLM output missing")
+    return out.pydantic
 
 
 # ---- Agents (each with a backstory) -----------------------------------------
@@ -60,15 +69,16 @@ def _router_agent() -> Agent:
             "Red Hat Support engineer or TAM, and you extract the essentials: platform, "
             "version, the CVE, and the hard constraint that blocks patching."
         ),
-        llm=get_llm(fast=True),   # classification + field extraction: mechanical → fast tier
+        llm=get_llm(fast=True),
         verbose=False,
     )
 
 
 def _analysis_agents() -> dict[str, Agent]:
-    # Each agent gets its OWN LLM instance: the analyst+retriever (and validator+strategist)
-    # pairs run concurrently on separate threads, so they must not share a mutable LLM object.
-    # Mechanical agents (CVE lookup, RAG retrieval, discovery) run on the fast tier.
+    # Fresh tool + LLM instances per request: concurrent waves and concurrent HTTP
+    # requests must not share mutable CrewAI/LiteLLM clients.
+    search_tool = RedHatCveSearchTool()
+    rag_tool = RagSearchTool()
     researcher = Agent(
         role="Red Hat CVE Researcher",
         goal="Discover which CVEs actually affect the customer's software and surface the ones that matter.",
@@ -78,19 +88,7 @@ def _analysis_agents() -> dict[str, Agent]:
             "asks 'what should I worry about', you find the relevant CVEs and their "
             "advisories from Red Hat's own public data, never from memory."
         ),
-        # Strong tier: discovering AND picking the single most-relevant CVE from a search is
-        # judgment, not lookup — the fast tier reliably fumbled it (returned no CVE).
-        tools=[SEARCH_TOOL], llm=get_llm(), verbose=False,
-    )
-    analyst = Agent(
-        role="Red Hat Vulnerability Analyst",
-        goal="State the authoritative truth about a CVE for this product, with citations.",
-        backstory=(
-            "You live in Red Hat's security data. Given a CVE and a product you report "
-            "severity, whether a fix shipped, and the Fix State (Fix deferred / Will not "
-            "fix / Not affected...). You never guess — you read the data and cite it."
-        ),
-        tools=[SEC_TOOL], llm=get_llm(fast=True), verbose=False,
+        tools=[search_tool], llm=get_llm(), verbose=False,
     )
     retriever = Agent(
         role="Mitigation Knowledge Retriever",
@@ -100,7 +98,7 @@ def _analysis_agents() -> dict[str, Agent]:
             "options that fit the platform. You never invent a control that isn't in the "
             "knowledge base."
         ),
-        tools=[RAG_TOOL], llm=get_llm(fast=True), verbose=False,
+        tools=[rag_tool], llm=get_llm(fast=True), verbose=False,
     )
     validator = Agent(
         role="Compensating Control Validator",
@@ -125,8 +123,8 @@ def _analysis_agents() -> dict[str, Agent]:
         ),
         llm=get_llm(), verbose=False,
     )
-    return {"researcher": researcher, "analyst": analyst,
-            "retriever": retriever, "validator": validator, "strategist": strategist}
+    return {"researcher": researcher, "retriever": retriever,
+            "validator": validator, "strategist": strategist}
 
 
 def _synth_agent(persona: str) -> Agent:
@@ -139,7 +137,7 @@ def _synth_agent(persona: str) -> Agent:
                 "raw fix_state / RHSA / VEX references included, ready to reuse across "
                 "similar cases."
             ),
-            llm=LLM, verbose=False,
+            llm=get_llm(), verbose=False,
         )
     return Agent(
         role="Customer Mitigation Advisor",
@@ -149,7 +147,7 @@ def _synth_agent(persona: str) -> Agent:
             "viable options, the trade-offs, a clear recommended approach, and the proof "
             "behind it — so they can act today without fear."
         ),
-        llm=LLM, verbose=False,
+        llm=get_llm(), verbose=False,
     )
 
 
@@ -176,12 +174,11 @@ def run_router(message: str, forced_persona: str = "") -> Intake:
         output_pydantic=Intake,
     )
     crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=False)
-    out = crew.kickoff(inputs={"message": message, "forced_persona": forced_persona or "none"})
-    intake: Intake = out.pydantic
+    out = crew.kickoff(inputs={"message": _esc(message),
+                               "forced_persona": forced_persona or "none"})
+    intake: Intake = _require_pydantic(out, "router")
     if forced_persona in ("primary", "secondary"):
-        intake.persona = forced_persona  # UI override wins
-    # The router LLM fills 'unknown'/'n/a' when the message names no CVE. Blank any
-    # non-CVE value so research runs instead of analyzing the literal string.
+        intake.persona = forced_persona
     if not valid_cve(intake.cve):
         intake.cve = ""
     return intake
@@ -204,7 +201,7 @@ def _gate_agent() -> Agent:
             "question you ask would actually change the recommendation. You do NOT suggest "
             "upgrading or mitigating a CVE until the picture fits."
         ),
-        llm=LLM, verbose=False,
+        llm=get_llm(), verbose=False,
     )
 
 
@@ -235,9 +232,14 @@ def run_gate(message: str, intake: Intake, answers: str = "") -> Sufficiency:
         output_pydantic=Sufficiency,
     )
     crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=False)
-    out = crew.kickoff(inputs={**intake.model_dump(), "message": message,
-                               "answers": answers or "none"})
-    return out.pydantic
+    dump = {k: _esc(str(v)) if isinstance(v, str) else v for k, v in intake.model_dump().items()}
+    out = crew.kickoff(inputs={**dump, "message": _esc(message),
+                               "answers": _esc(answers or "none")})
+    gate: Sufficiency = _require_pydantic(out, "gate")
+    # Empty question list with insufficient=true stuck UX — treat as sufficient.
+    if not gate.sufficient and not gate.questions:
+        return Sufficiency(sufficient=True, missing=gate.missing, questions=[])
+    return gate
 
 
 # ---- Advice crew (shared analysis + persona synthesizer) ---------------------
@@ -258,12 +260,13 @@ def run_research(intake: Intake) -> CveChoice:
         output_pydantic=CveChoice,
     )
     crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=False)
-    return crew.kickoff(inputs={**intake.model_dump()}).pydantic
+    return _require_pydantic(crew.kickoff(inputs={**intake.model_dump()}), "research")
 
 
 def _kick(agent: Agent, task: Task, inputs: dict):
     """Run one agent+task as a single-task crew. Lets a wave fan out across threads, each
     with its own crew, instead of one sequential crew (CrewAI serializes tasks in a crew)."""
+    progress.check_cancel()
     return Crew(agents=[agent], tasks=[task], process=Process.sequential,
                 verbose=False).kickoff(inputs=inputs)
 
@@ -286,7 +289,7 @@ def _audit_trail(intake: Intake, persona: str, researched: bool, sig: dict,
                       "detail": f"No CVE named — searched Red Hat's public catalog and "
                                 f"pinned {intake.cve}", "sources": []})
     trail += [
-        {"step": "Ground the vulnerability facts", "basis": "Red Hat Security Data",
+        {"step": "Ground the vulnerability facts", "basis": "Python · Red Hat Security Data",
          "detail": f"fix_state = {v.fix_state} · severity {v.threat_severity}"
                    + (f" · CVSS {v.cvss3}" if v.cvss3 else ""),
          "sources": v.source_urls or [], "ms": int((_tA - _t0) * 1000)},
@@ -318,40 +321,25 @@ def _is_vex_option(o) -> bool:
 
 def run_advice(intake: Intake, persona: str, answers: str = "",
                compliance: list | None = None) -> dict:
+    progress.check_cancel()
     # Pin the CVE deterministically: use the one the customer gave, else research once
-    # and lock the pick in Python so the Analyst can't switch to a different CVE.
+    # and lock the pick in Python so later agents can't switch to a different CVE.
     researched = not intake.cve.strip()
     if researched:
         progress.emit("Discovering the CVE in Red Hat's catalog")
         found = run_research(intake).cve
         intake = intake.model_copy(update={"cve": found if valid_cve(found) else ""})
     if not valid_cve(intake.cve):
-        # No CVE given and none discoverable from the stated product — don't fabricate an
-        # all-"unknown" analysis; ask for a valid CVE (advise() turns this into need_cve).
         return {"needs_cve": True}
 
-    # Prioritization facts (KEV + EPSS) — computed in Python, not LLM-guessed. Fed into
-    # the ranking/risk prompts as a note; the final signal is pinned onto the result below.
     sig = assess(intake.cve)
-
     a = _analysis_agents()
     synth = _synth_agent(persona)
-    base = {**intake.model_dump(), "persona": persona, "answers": answers or "none",
-            "priority_note": priority_note(sig)}
+    base = {**intake.model_dump(), "persona": persona,
+            "answers": _esc(answers or "none"),
+            "priority_note": _esc(priority_note(sig))}
 
-    # ---- Wave A: analyst (RH security data) + retriever (RAG) are independent → run them
-    # concurrently. Threads (not asyncio) because flow.kickoff() already owns an event loop,
-    # and the calls are network-bound so the GIL is released during each LLM/tool round-trip.
-    analyze = Task(
-        description=(
-            "Look up EXACTLY the CVE '{cve}' for product '{product}' using the "
-            "redhat_security_data tool — do NOT analyze any other CVE. Report fix_state, "
-            "severity, CVSS, fixing RHSA/NVRA if any, whether NDVM applies, and the source "
-            "URL. Use ONLY the tool's output."
-        ),
-        expected_output="The CVE finding with fix_state and source URL.",
-        agent=a["analyst"],
-    )
+    # ---- Wave A: pin VulnFinding in Python (trust spine) ‖ RAG retrieve
     retrieve = Task(
         description=(
             "Use mitigation_rag_search to find non-disruptive mitigations for platform "
@@ -363,21 +351,24 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
     )
     progress.emit("Grounding the CVE in Red Hat data + retrieving mitigations")
     _t0 = time.time()
+    progress.check_cancel()
     with ThreadPoolExecutor(max_workers=2) as ex:
-        fa = ex.submit(_kick, a["analyst"], analyze, base)
+        fp = ex.submit(lookup_vuln_finding, intake.cve, intake.product)
         fr = ex.submit(_kick, a["retriever"], retrieve, base)
-        analyst_finding, retrieved = fa.result().raw, fr.result().raw
+        pinned: VulnFinding = fp.result(timeout=_WAVE_TIMEOUT)
+        retrieved = fr.result(timeout=_WAVE_TIMEOUT).raw
     _tA = time.time()
+    analyst_finding = pinned.model_dump_json()
 
-    # ---- Wave B: validator + strategist both consume A but not each other → concurrent.
-    # A's outputs are injected as inputs (interpolate_only leaves their JSON braces intact),
-    # replacing CrewAI's context= hand-off which requires one sequential crew.
-    ctx = {**base, "analyst_finding": analyst_finding, "retrieved_candidates": retrieved}
+    # ---- Wave B: validator + strategist (injected values escaped for interpolate_only)
+    progress.check_cancel()
+    ctx = {**base, "analyst_finding": _esc(analyst_finding),
+           "retrieved_candidates": _esc(retrieved)}
     validate = Task(
         description=(
             "From the customer's answers, list the security controls they ALREADY have in "
             "place:\n---\n{answers}\n---\n"
-            "Analyst finding for CVE '{cve}':\n---\n{analyst_finding}\n---\n"
+            "Authoritative Python-pinned CVE finding for '{cve}':\n---\n{analyst_finding}\n---\n"
             "Retrieved Red Hat guidance:\n---\n{retrieved_candidates}\n---\n"
             "Assess EACH existing control against this CVE's attack vector and fix_state: "
             "status is 'mitigated' (fully blocks this exploit path), 'partial' (reduces "
@@ -391,7 +382,7 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
     )
     strategize = Task(
         description=(
-            "Analyst finding:\n---\n{analyst_finding}\n---\n"
+            "Authoritative CVE finding:\n---\n{analyst_finding}\n---\n"
             "Retrieved candidate mitigations:\n---\n{retrieved_candidates}\n---\n"
             "Rank these candidates by disruption, effectiveness and effort for the "
             "constraint '{constraint}', weighing the customer's specific answers:\n"
@@ -410,18 +401,19 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
     with ThreadPoolExecutor(max_workers=2) as ex:
         fv = ex.submit(_kick, a["validator"], validate, ctx)
         fs = ex.submit(_kick, a["strategist"], strategize, ctx)
-        control_report: ControlReport = fv.result().pydantic
-        strategy = fs.result().raw
+        control_report: ControlReport = _require_pydantic(
+            fv.result(timeout=_WAVE_TIMEOUT), "validator")
+        strategy = fs.result(timeout=_WAVE_TIMEOUT).raw
     _tB = time.time()
 
-    # ---- Wave C: synth folds everything (incl. the environment summary the dropped profiler
-    # agent used to write) into the final AdviceResult.
+    # ---- Wave C: synth (narrative only — vulnerability overwritten from pinned)
+    progress.check_cancel()
     tone = ("Write for a Red Hat TAM: dense, evidence-first, every claim cited."
             if persona == "secondary"
             else "Write for a stressed Platform Owner: plain, confident, reassuring.")
     progress.emit("Writing the briefing")
-    synth_inputs = {**ctx, "controls_json": control_report.model_dump_json(),
-                    "strategy": strategy}
+    synth_inputs = {**ctx, "controls_json": _esc(control_report.model_dump_json()),
+                    "strategy": _esc(strategy)}
     synthesize = Task(
         description=(
             f"{tone} Produce the final AdviceResult. Set persona='{persona}', "
@@ -430,7 +422,7 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
             "exposure / backups / maintenance window from these customer answers (may say "
             "'none'):\n---\n{answers}\n---\n"
             "The 'vulnerability' field MUST be a JSON OBJECT (never a string, never '{{}}'), "
-            "copied exactly from this analyst finding with all fields (cve_id, "
+            "copied exactly from this authoritative finding with all fields (cve_id, "
             "threat_severity, cvss3, fix_state, ndvm_applies, rhsa, fixed_nvra, rationale, "
             "source_urls):\n---\n{analyst_finding}\n---\n"
             "Copy these control assessments verbatim into existing_controls (control, status, "
@@ -447,8 +439,8 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
             "urgency established above. Fill options from this ranking:\n---\n{strategy}\n---\n"
             "each with disruption, effectiveness (1-4), effort (1-4) and source_urls. Do NOT "
             "include a 'confirm/verify not affected (VEX)' option, and do not mention VEX in "
-            "the explanation, UNLESS the analyst finding's fix_state is exactly 'Not affected'. "
-            "Write a "
+            "the explanation, UNLESS the authoritative finding's fix_state is exactly "
+            "'Not affected'. Write a "
             "clear explanation of the trade-offs that favours the LEAST DISRUPTIVE option "
             "that is still effective for the constraint '{constraint}' (the options are "
             "re-ranked deterministically by a disruption-weighted score afterwards, so keep "
@@ -460,43 +452,34 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
         agent=synth,
         output_pydantic=AdviceResult,
     )
-    result: AdviceResult = _kick(synth, synthesize, synth_inputs).pydantic
+    result: AdviceResult = _require_pydantic(
+        _kick(synth, synthesize, synth_inputs), "synth")
     _tC = time.time()
-    print(f"[timing] waveA(analyst‖retriever)={_tA-_t0:.1f}s "
+    print(f"[timing] waveA(pin‖retriever)={_tA-_t0:.1f}s "
           f"waveB(validator‖strategist)={_tB-_tA:.1f}s waveC(synth)={_tC-_tB:.1f}s "
           f"crew_total={_tC-_t0:.1f}s", flush=True)
-    # ponytail: pin ndvm_applies from the authoritative fix_state so the synth LLM can't
-    # flip it to False on a "Fixed" CVE the customer still can't reboot to apply.
-    result.vulnerability.ndvm_applies = ndvm_applies_for(result.vulnerability.fix_state)
-    # Re-tier now the analyst has the real severity, then pin the KEV/EPSS signal in Python
-    # (never LLM-guessed) so the UI badge and ranking rest on the auditable feeds.
-    sig["tier"], sig["rationale"] = classify(sig["in_kev"], sig["epss"],
-                                             result.vulnerability.threat_severity)
-    # Compliance posture (Insights OpenSCAP) is the estate side of risk: weak hardening on
-    # the affected hosts means the compensating controls aren't in force, so shift the tier.
+
+    # Trust spine: always overwrite LLM vulnerability with Python-pinned Red Hat facts.
+    result.vulnerability = pinned
+    sig["tier"], sig["rationale"] = classify(sig.get("kev", sig["in_kev"]), sig["epss"],
+                                             pinned.threat_severity)
     csig = compliance_signal(compliance or [])
     if csig["delta"]:
         sig["tier"] = adjust_tier(sig["tier"], csig["delta"], sig["in_kev"])
         sig["rationale"] = (sig["rationale"] + " " + compliance_note(csig)).strip()
     sig["compliance"] = csig
-    result.priority = ExploitSignal(**sig)
-    # Deterministic option ranking: order + recommendation are a pure function of each
-    # option's disruption/effectiveness/effort (auditable, reproducible) — the LLM keeps the
-    # explanation. Weighted by the customer's uptime constraint and exploitation urgency.
+    result.priority = ExploitSignal(
+        **{k: v for k, v in sig.items() if k in ExploitSignal.model_fields})
+
     if result.options:
-        # "Confirm not affected via VEX" scores maximally (none/effective/cheap), so it
-        # otherwise wins every ranking — but it only makes sense when Red Hat actually says
-        # Not affected. For any other fix_state it contradicts the authoritative status; drop
-        # it (guarded so we never empty the option list).
-        if result.vulnerability.fix_state != "Not affected":
+        if pinned.fix_state != "Not affected":
             kept = [o for o in result.options if not _is_vex_option(o)]
             if kept:
                 result.options = kept
-        rank_options(result.options, intake.constraint, urgent=sig["tier"] in ("act_now", "prioritize"))
+        rank_options(result.options, intake.constraint,
+                     urgent=sig["tier"] in ("act_now", "prioritize"))
         rec = result.options[0]
         result.recommended_title = rec.title
-        # Playbook is a trust-critical artifact: build it in Python from the ranked
-        # recommendation (never the LLM's free text), same rule as scoring/priority.
         v = result.vulnerability
         result.playbook = build_playbook(
             platform=result.platform, action_type=rec.action_type, title=rec.title,
@@ -504,8 +487,6 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
             fix_state=v.fix_state, rhsa=v.rhsa or "", product=intake.product,
             version=intake.version)
     d = result.model_dump()
-    # Audit trail rides in the payload: shown in the UI and persisted via the existing
-    # recommendation table (its payload JSON), so the answer's provenance is inspectable.
     d["audit"] = _audit_trail(intake, persona, researched, sig, result,
                               len(control_report.controls), (_t0, _tA, _tB, _tC))
     return d
@@ -517,32 +498,31 @@ class NDVMState(BaseModel):
     message: str = ""
     forced_persona: str = ""
     answers: str = ""
-    force: bool = False          # skip the gate (e.g. after enough question rounds)
-    account: str = ""            # UI-selected customer account (name or org id)
+    force: bool = False
+    account: str = ""
     intake: Intake | None = None
     gate: Sufficiency | None = None
-    account_view: dict | None = None   # Insights-style estate block for the UI
+    account_view: dict | None = None
     result: dict | None = None
 
 
 class NDVMFlow(Flow[NDVMState]):
     @start()
     def triage(self):
+        progress.check_cancel()
         progress.emit("Routing & scoping your request")
         self.state.intake = run_router(self.state.message, self.state.forced_persona)
         if not self.state.intake.on_topic:
-            self.state.gate = Sufficiency(sufficient=True)   # unused; refusal handled in route
+            self.state.gate = Sufficiency(sufficient=True)
             return
 
-        # Resolve a customer account: explicit UI selection, or a company name detected
-        # in the message during auto-detect (naming a customer => a TAM referencing them).
         acc = None
         if self.state.account:
             acc = load_account(self.state.account)
         elif not self.state.forced_persona:
             acc = detect_account(self.state.message)
             if acc:
-                self.state.intake.persona = "secondary"  # ponytail: named account => TAM view
+                self.state.intake.persona = "secondary"
 
         if acc:
             progress.emit("Loading the customer estate from Insights")
@@ -552,7 +532,7 @@ class NDVMFlow(Flow[NDVMState]):
             estate = estate_as_answers(acc, self.state.intake.cve)
             self.state.answers = (estate + "\n" + self.state.answers).strip()
             self.state.account_view = account_view(acc, self.state.intake.cve)
-            self.state.gate = Sufficiency(sufficient=True)   # estate answers the gate
+            self.state.gate = Sufficiency(sufficient=True)
             return
 
         if not self.state.force:
@@ -564,18 +544,21 @@ class NDVMFlow(Flow[NDVMState]):
     @router(triage)
     def route(self):
         if not self.state.intake.on_topic:
-            return "off_topic"          # guardrail: only security/mitigation topics
+            return "off_topic"
         if not self.state.gate.sufficient:
-            return "need_info"          # withhold advice, ask the customer first
-        return self.state.intake.persona  # "primary" | "secondary"
+            return "need_info"
+        persona = self.state.intake.persona
+        if persona not in ("primary", "secondary"):
+            return "primary"
+        return persona
 
     @listen("off_topic")
     def refuse(self):
-        self.state.result = None        # refusal message assembled in advise()
+        self.state.result = None
 
     @listen("need_info")
     def ask(self):
-        self.state.result = None        # questions travel in state.gate
+        self.state.result = None
 
     @listen("primary")
     def primary_flow(self):
@@ -588,7 +571,6 @@ class NDVMFlow(Flow[NDVMState]):
                                        self._compliance())
 
     def _compliance(self):
-        """OpenSCAP rows for the affected hosts, if an account estate was loaded."""
         return (self.state.account_view or {}).get("compliance")
 
 
@@ -613,5 +595,8 @@ def advise(message: str, forced_persona: str = "", answers: str = "",
                 "message": ("I couldn't determine a specific CVE from your request. Please "
                             "give me a CVE id (format CVE-YYYY-NNNN) — or name the exact "
                             "product/package so I can look one up.")}
+    if s.result is None:
+        return {"intake": s.intake.model_dump(), "status": "error", "advice": None,
+                "message": "advice flow completed without a result"}
     return {"intake": s.intake.model_dump(), "status": "ok", "advice": s.result,
             "account": s.account_view}

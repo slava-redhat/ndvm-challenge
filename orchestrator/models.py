@@ -46,7 +46,7 @@ class VulnFinding(BaseModel):
     threat_severity: str = "unknown"
     cvss3: Optional[float] = None
     fix_state: str = "unknown"           # authoritative NDVM trigger
-    ndvm_applies: bool = True            # False when fixed/not-affected
+    ndvm_applies: bool = True            # False only when fix_state is 'Not affected' (Fixed still applies)
     rhsa: Optional[str] = None
     fixed_nvra: Optional[str] = None
     rationale: str = ""
@@ -59,7 +59,7 @@ class ExploitSignal(BaseModel):
     in_kev: bool = False                       # CISA Known Exploited Vulnerabilities catalog
     epss: Optional[float] = None               # FIRST EPSS probability 0..1 (30-day exploit likelihood)
     epss_percentile: Optional[float] = None
-    tier: Literal["act_now", "prioritize", "scheduled", "routine"] = "routine"
+    tier: Literal["act_now", "prioritize", "scheduled", "routine", "unknown"] = "routine"
     rationale: str = ""
     source_urls: List[str] = []
     compliance: Optional[dict] = None          # OpenSCAP posture modifier (priority.compliance_signal)

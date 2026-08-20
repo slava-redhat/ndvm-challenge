@@ -8,7 +8,8 @@ ORCH = os.environ.get("ORCHESTRATOR_URL", "http://localhost:8000")
 DISRUPTION_COLOR = {"none": "🟢", "low": "🟢", "medium": "🟠", "high": "🔴"}
 CONTROL_ICON = {"mitigated": "✅", "partial": "🟡", "not_mitigated": "❌", "unknown": "⚪"}
 TIER_BADGE = {"act_now": ("🔴", "Act now"), "prioritize": ("🟠", "Prioritize"),
-              "scheduled": ("🟡", "Scheduled"), "routine": ("⚪", "Routine")}
+              "unknown": ("⚫", "Unknown"), "scheduled": ("🟡", "Scheduled"),
+              "routine": ("⚪", "Routine")}
 
 
 # P4 — provenance: label each source by trust tier so David sees WHY to trust a fact.
@@ -307,33 +308,43 @@ else:
 MAX_ROUNDS = 2  # ponytail: stop questioning after 2 rounds and advise anyway (force)
 
 
-def run_with_progress(message, persona, answers="", force=False, account=""):
+def run_with_progress(message, persona, answers="", force=False, account="", round=0):
     """Stream the flow's real steps into a live status box (replaces the opaque spinner),
     and return the final result dict. Calls st.stop() on error."""
     payload = {"message": message, "persona": persona, "answers": answers,
-               "force": force, "account": account}
+               "force": force, "account": account, "round": round}
     data = None
     with st.status("Working on it…", expanded=True) as status:
         try:
+            # (connect, read) — heartbeats keep the read timeout from firing mid-wave
             with requests.post(f"{ORCH}/advise_stream", json=payload,
-                               stream=True, timeout=300) as r:
+                               stream=True, timeout=(10, 120)) as r:
                 r.raise_for_status()
                 for line in r.iter_lines():
                     if not line:
                         continue
-                    evt = json.loads(line)
-                    if evt.get("type") == "step":
+                    try:
+                        evt = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    et = evt.get("type")
+                    if et == "ping":
+                        continue
+                    if et == "step":
                         status.update(label=evt["step"])
                         st.write(f"• {evt['step']}")
-                    elif evt.get("type") == "error":
+                    elif et == "error":
                         raise RuntimeError(evt.get("message", "unknown error"))
-                    elif evt.get("type") == "result":
+                    elif et == "result":
                         data = evt.get("data")
             status.update(label="Done", state="complete")
         except Exception as e:
             status.update(label="Failed", state="error")
             st.error(f"Orchestrator error: {e}")
             st.stop()
+    if data is None:
+        st.error("Stream ended without a result")
+        st.stop()
     return data
 
 
@@ -385,7 +396,8 @@ def render_advice(intake, advice):
         pr = advice.get("priority") or {}
         pline = priority_line(pr)
         if pline:
-            (st.error if pr.get("tier") == "act_now" else st.warning)(
+            (st.error if pr.get("tier") == "act_now" else
+             st.warning if pr.get("tier") != "routine" else st.info)(
                 f"{pline}\n\n{pr.get('rationale','')}")
         st.write(vuln.get("rationale", ""))
         if vuln.get("rhsa"):
@@ -486,7 +498,7 @@ if pending:
         rnd = pending["round"] + 1
         force = rnd > MAX_ROUNDS  # ran out of rounds: advise with what we have
         data = run_with_progress(pending["orig_msg"], pending["persona"], merged, force,
-                                 pending.get("account", ""))
+                                 pending.get("account", ""), round=rnd)
         if data.get("status") == "need_info" and not force:
             ss["pending"] = {"questions": data["questions"], "missing": data.get("missing", []),
                              "orig_msg": pending["orig_msg"], "persona": pending["persona"],

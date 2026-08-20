@@ -39,8 +39,11 @@ def search_params(package="", product="", severity="", advisory="", after="") ->
             params[k] = v.strip()
     if len(params) == 1:
         raise ValueError("provide at least one filter (package/product/severity/advisory/after)")
-    if "severity" in params and params["severity"].lower() not in SEVERITIES:
-        raise ValueError(f"severity must be one of {sorted(SEVERITIES)}")
+    if "severity" in params:
+        sev = params["severity"].lower()
+        if sev not in SEVERITIES:
+            raise ValueError(f"severity must be one of {sorted(SEVERITIES)}")
+        params["severity"] = sev  # RH API requires lowercase
     if "advisory" in params and not ADVISORY_RE.match(params["advisory"]):
         raise ValueError("advisory must look like RHSA-2024:2394 (RHSA/RHBA/RHEA-YYYY:NNNN)")
     if "after" in params and not DATE_RE.match(params["after"]):
@@ -63,7 +66,28 @@ def slim_rows(rows: list) -> list:
 
 
 def _match(product_name: str, hint: str) -> bool:
-    return bool(hint) and hint.lower() in (product_name or "").lower()
+    """True when hint is a substring of product_name, rejecting minor-version false
+    hits (hint '... Linux 8' must not match '... Linux 8.6')."""
+    if not hint:
+        return False
+    pn, h = (product_name or "").lower(), hint.lower()
+    idx = pn.find(h)
+    if idx < 0:
+        return False
+    after = pn[idx + len(h):]
+    # Hint ended on a version digit; a following ".N" means a longer minor matched.
+    if h[-1:].isdigit() and after.startswith(".") and after[1:2].isdigit():
+        return False
+    return True
+
+
+def _best_match(rows: list, product_hint: str):
+    """Among rows whose product_name matches the hint, prefer the shortest name
+    (exact major over a longer string that still contains the hint)."""
+    hits = [r for r in rows if _match(r.get("product_name", ""), product_hint)]
+    if not hits:
+        return None
+    return min(hits, key=lambda r: len(r.get("product_name") or ""))
 
 
 def analyze_cve_json(data: dict, product_hint: str = "") -> dict:
@@ -71,9 +95,10 @@ def analyze_cve_json(data: dict, product_hint: str = "") -> dict:
     cve_id = data.get("name", "")
     cvss3 = None
     try:
-        cvss3 = float(data.get("cvss3", {}).get("cvss3_base_score"))
+        raw = (data.get("cvss3") or {}).get("cvss3_base_score")
+        cvss3 = float(raw) if raw is not None else None
     except (TypeError, ValueError):
-        pass
+        cvss3 = None
 
     rhsa = fixed_nvra = None
     fix_state = "unknown"
@@ -81,23 +106,21 @@ def analyze_cve_json(data: dict, product_hint: str = "") -> dict:
     states = data.get("package_state") or []
 
     # 1) A shipped erratum for the product -> Fixed.
-    for rel in releases:
-        if _match(rel.get("product_name", ""), product_hint):
-            fix_state = "Fixed"
-            rhsa = rel.get("advisory")
-            fixed_nvra = rel.get("package")
-            break
+    rel = _best_match(releases, product_hint)
+    if rel is not None:
+        fix_state = "Fixed"
+        rhsa = rel.get("advisory")
+        fixed_nvra = rel.get("package")
 
     # 2) Otherwise the declared package_state for the product.
     if fix_state == "unknown":
-        for st in states:
-            if _match(st.get("product_name", ""), product_hint):
-                fix_state = st.get("fix_state", "unknown")
-                break
+        st = _best_match(states, product_hint)
+        if st is not None:
+            fix_state = st.get("fix_state") or "unknown"
 
     # 3) No product match: surface the most relevant state overall.
     if fix_state == "unknown":
-        all_states = {st.get("fix_state") for st in states}
+        all_states = {st.get("fix_state") for st in states if st.get("fix_state")}
         if releases:
             fix_state = "Fixed"
             rhsa = releases[0].get("advisory")
@@ -109,7 +132,14 @@ def analyze_cve_json(data: dict, product_hint: str = "") -> dict:
         elif all_states == {"Not affected"}:
             fix_state = "Not affected"
         elif all_states:
-            fix_state = next(iter(all_states))
+            # Prefer a known NDVM-relevant label over hash-order of the set.
+            for pref in ("Affected", "Fix deferred", "Will not fix",
+                         "Out of support scope", "Fixed", "Not affected"):
+                if pref in all_states:
+                    fix_state = pref
+                    break
+            else:
+                fix_state = sorted(all_states)[0]
 
     ndvm_applies = ndvm_applies_for(fix_state)
     if fix_state == "Not affected":

@@ -74,7 +74,19 @@ def test_input_guardrails():
     assert valid_cve("CVE-2023-3390") and valid_cve("cve-2024-12345")
     assert not valid_cve("old openssh") and not valid_cve("") and not valid_cve("CVE-23-1")
     # search filters: good inputs pass, malformed ones raise instead of firing a request
-    assert search_params(package="kernel", severity="Important")["severity"] == "Important"
+    assert search_params(package="kernel", severity="Important")["severity"] == "important"
+    # cvss3: null must not crash
+    null_cvss = analyze_cve_json({"name": "CVE-2024-1", "cvss3": None, "package_state": []})
+    assert null_cvss["cvss3"] is None and null_cvss["fix_state"] in ("unknown", "Fixed")
+    # major version hint must not latch onto a longer minor
+    multi = {
+        "name": "CVE-2024-2",
+        "package_state": [
+            {"product_name": "Red Hat Enterprise Linux 8.6", "fix_state": "Affected"},
+            {"product_name": "Red Hat Enterprise Linux 8", "fix_state": "Fix deferred"},
+        ],
+    }
+    assert analyze_cve_json(multi, "Enterprise Linux 8")["fix_state"] == "Fix deferred"
     assert search_params(advisory="RHSA-2024:2394")["advisory"] == "RHSA-2024:2394"
     for bad in (dict(severity="scary"), dict(advisory="RHSA-bogus"), dict(after="2024/01/01")):
         try:

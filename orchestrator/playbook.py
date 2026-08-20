@@ -11,9 +11,6 @@ Templates are authored as literal strings so Ansible's Jinja ({{ }}) survives
 verbatim and no YAML serializer / dependency is needed. Parameters are injected
 with __TOKEN__ replacement (no clash with {{ }} or shell $).
 """
-from textwrap import indent
-
-
 def _header(title, cve, fix_state, rhsa, product, version, sources, template_id):
     fixed = f" (fix: {rhsa})" if rhsa else ""
     # version is often already embedded in product ("...Linux 9") — don't repeat it
@@ -281,28 +278,45 @@ _TEMPLATES = {
 
 def _resolve(platform, action_type, title):
     """Pick a template id from the recommended option. Returns 'scaffold' when no
-    curated template fits (the LLM synthesised an option outside the catalog)."""
+    curated template fits (the LLM synthesised an option outside the catalog).
+    action_type wins; title keywords only break ties within that type."""
     t = (title or "").lower()
     a = (action_type or "").lower()
     if a == "verify" or "vex" in t or "not affected" in t:
         return "vex"
     if platform == "openshift":
+        if a == "disable":
+            return "os_scale"
+        if a == "network":
+            return "os_networkpolicy"
+        if a == "config":
+            if "admission" in t or "image" in t:
+                return "os_admission"
+            return "os_scc"
         if "admission" in t or "image" in t:
             return "os_admission"
-        if "scc" in t or "security context" in t or a == "config":
+        if "scc" in t or "security context" in t:
             return "os_scc"
-        if a == "network" or "networkpolicy" in t or "network policy" in t:
+        if "networkpolicy" in t or "network policy" in t:
             return "os_networkpolicy"
-        if a == "disable" or "scale" in t:
+        if "scale" in t:
             return "os_scale"
     if platform == "rhel":
-        if a == "livepatch" or "kpatch" in t or "live patch" in t or "livepatch" in t:
+        if a == "livepatch":
             return "rhel_kpatch"
-        if a == "selinux" or "selinux" in t:
+        if a == "selinux":
             return "rhel_selinux"
-        if a == "network" or "firewall" in t:
+        if a == "network":
             return "rhel_firewalld"
-        if a == "disable" or "disable" in t:
+        if a == "disable":
+            return "rhel_disable"
+        if "kpatch" in t or "live patch" in t or "livepatch" in t:
+            return "rhel_kpatch"
+        if "selinux" in t:
+            return "rhel_selinux"
+        if "firewall" in t:
+            return "rhel_firewalld"
+        if "disable" in t:
             return "rhel_disable"
     return "scaffold"
 
@@ -319,8 +333,10 @@ def _scaffold(title, steps, cve):
             f'      ansible.builtin.debug:\n'
             f'        msg: "{safe}"\n')
     body = "".join(tasks) or "    - name: No steps\n      ansible.builtin.debug: {msg: none}\n"
+    # Quote the play name — LLM titles often contain ':' which breaks YAML otherwise.
+    safe_title = str(title or "mitigation").replace('"', "'")
     return (
-        f"- name: {title} (documented steps for __CVE__)\n"
+        f'- name: "{safe_title} (documented steps for __CVE__)"\n'
         f"  hosts: \"{{{{ target_hosts | default('all') }}}}\"\n"
         f"  become: true\n"
         f"  gather_facts: false\n"
@@ -368,10 +384,11 @@ if __name__ == "__main__":
         ("openshift", "config", "Block the image/version with an admission policy"),
         ("openshift", "disable", "Scale down the non-essential vulnerable component"),
         ("other", "custom", "Some synthesised option"),  # -> scaffold
+        ("other", "custom", "Restrict port: 8080"),  # colon in title must stay valid YAML
     ]
     expected_ids = ["rhel_kpatch", "rhel_selinux", "rhel_firewalld", "rhel_disable",
                     "vex", "os_networkpolicy", "os_scc", "os_admission", "os_scale",
-                    "scaffold"]
+                    "scaffold", "scaffold"]
     for (plat, at, title), want in zip(cases, expected_ids):
         assert _resolve(plat, at, title) == want, f"{title!r} -> {_resolve(plat, at, title)} != {want}"
         pb = build_playbook(platform=plat, action_type=at, title=title,
@@ -383,6 +400,9 @@ if __name__ == "__main__":
         assert isinstance(doc, list) and len(doc) == 1, f"{title}: not one play"
         assert doc[0].get("tasks"), f"{title}: no tasks"
         assert "CVE-2023-3390" in pb and "not model-authored" in pb
+    # action_type wins over misleading title keywords
+    assert _resolve("openshift", "disable", "admission scale") == "os_scale"
+    assert _resolve("rhel", "network", "SELinux firewall combo") == "rhel_firewalld"
     # scaffold must NOT leak a curated module; curated ones must NOT be a debug-only list
     sc = build_playbook(platform="other", action_type="x", title="z", steps=["a"],
                         source_urls=[], cve="CVE-2024-0001")

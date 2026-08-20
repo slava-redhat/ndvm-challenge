@@ -17,8 +17,11 @@ _MODEL = os.environ.get("NDVM_LLM_MODEL", "vertex_ai/claude-sonnet-4@20250514")
 # ~5x faster than Sonnet on Vertex for the same tool-calling work. Set NDVM_FAST_LLM_MODEL
 # to your strong model id to disable tiering (e.g. if Haiku isn't enabled in your project).
 _FAST_MODEL = os.environ.get("NDVM_FAST_LLM_MODEL", "vertex_ai/claude-haiku-4-5@20251001")
+_TIMEOUT = float(os.environ.get("NDVM_LLM_TIMEOUT", "90"))
 
 
-def get_llm(temperature: float = 0.2, fast: bool = False) -> LLM:
+def get_llm(temperature: float = 0.2, fast: bool = False,
+            timeout: float | None = None) -> LLM:
     return LLM(model=_FAST_MODEL if fast else _MODEL, temperature=temperature,
-               vertex_project=_PROJECT, vertex_location=_LOCATION)
+               vertex_project=_PROJECT, vertex_location=_LOCATION,
+               timeout=timeout if timeout is not None else _TIMEOUT)

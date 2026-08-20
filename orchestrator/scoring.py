@@ -15,9 +15,12 @@ import re
 # none = best (0 penalty) ... high = worst; disruption_score = 3 - rank (higher better).
 DISRUPTION_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
 
+# Require an explicit uptime constraint — bare "maintenance window" means one EXISTS.
 _NO_DOWNTIME = re.compile(
-    r"no[\s-]*(reboot|downtime|outage|restart)|can'?t\s+(reboot|restart)|"
-    r"without\s+(a\s+)?(reboot|downtime|outage)|maintenance\s+window", re.I)
+    r"no[\s-]*(reboot|downtime|outage|restart|maintenance\s+window)|"
+    r"can(?:not|'t)\s+(reboot|restart)|"
+    r"without\s+(a\s+)?(reboot|downtime|outage)|"
+    r"until\s+(?:the\s+)?(?:next\s+)?maintenance", re.I)
 
 
 def no_downtime(constraint: str) -> bool:
@@ -66,4 +69,8 @@ if __name__ == "__main__":
             O(title="livepatch", disruption="none", effectiveness=3, effort=1, score=None)]
     rank_options(opts, constraint="can't reboot until quarter-end")
     assert opts[0].title == "livepatch" and opts[0].score is not None
+    # Positive maintenance window is NOT a no-downtime constraint.
+    assert no_downtime("open maintenance window available") is False
+    assert no_downtime("no maintenance window until quarter-end") is True
+    assert no_downtime("cannot reboot this host") is True
     print("ok")
