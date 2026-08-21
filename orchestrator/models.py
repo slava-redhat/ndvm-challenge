@@ -63,6 +63,11 @@ class ExploitSignal(BaseModel):
     rationale: str = ""
     source_urls: List[str] = []
     compliance: Optional[dict] = None          # OpenSCAP posture modifier (priority.compliance_signal)
+    # SSVC (SEI/CISA Table 9) — action decision, not a likelihood score
+    ssvc_decision: Optional[Literal["track", "track_star", "attend", "act"]] = None
+    ssvc_label: Optional[str] = None           # Track / Track* / Attend / Act
+    ssvc_inputs: Optional[dict] = None
+    ssvc_rationale: Optional[str] = None
 
 
 class ControlAssessment(BaseModel):

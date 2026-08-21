@@ -10,6 +10,8 @@ CONTROL_ICON = {"mitigated": "✅", "partial": "🟡", "not_mitigated": "❌", "
 TIER_BADGE = {"act_now": ("🔴", "Act now"), "prioritize": ("🟠", "Prioritize"),
               "unknown": ("⚫", "Unknown"), "scheduled": ("🟡", "Scheduled"),
               "routine": ("⚪", "Routine")}
+SSVC_BADGE = {"act": ("🔴", "Act"), "attend": ("🟠", "Attend"),
+              "track_star": ("🟡", "Track*"), "track": ("⚪", "Track")}
 
 
 # P4 — provenance: label each source by trust tier so David sees WHY to trust a fact.
@@ -51,6 +53,10 @@ def priority_line(pr: dict) -> str:
         bits.append("known-exploited (CISA KEV)")
     if pr.get("epss") is not None:
         bits.append(f"EPSS {pr['epss']:.0%}")
+    if pr.get("ssvc_label") or pr.get("ssvc_decision"):
+        sicon, slabel = SSVC_BADGE.get(pr.get("ssvc_decision") or "",
+                                       ("", pr.get("ssvc_label") or "SSVC"))
+        bits.append(f"SSVC {sicon} {slabel}".strip())
     return " · ".join(bits)
 
 
@@ -97,6 +103,12 @@ def report_md(intake: dict, advice: dict) -> str:
         out.append(f"- **Exploitation urgency:** {icon} {label}"
                    + (" · known-exploited (CISA KEV)" if pr.get("in_kev") else "")
                    + (f" · EPSS {pr['epss']:.0%}" if pr.get("epss") is not None else ""))
+        if pr.get("ssvc_label") or pr.get("ssvc_decision"):
+            sicon, slabel = SSVC_BADGE.get(pr.get("ssvc_decision") or "",
+                                          ("", pr.get("ssvc_label") or "SSVC"))
+            out.append(f"- **SSVC decision:** {sicon} {slabel} (CISA/SEI Table 9 — action priority)")
+            if pr.get("ssvc_rationale"):
+                out.append(f"  - {pr['ssvc_rationale']}")
         if pr.get("rationale"):
             out.append(f"  - {pr['rationale']}")
         out += [f"  - source: {src_tag(s)}" for s in pr.get("source_urls", [])]
@@ -228,9 +240,13 @@ def report_pdf(intake: dict, advice: dict, account: dict | None = None) -> bytes
             bits.append("known-exploited (CISA KEV)")
         if pr.get("epss") is not None:
             bits.append(f"EPSS {pr['epss']:.0%}")
+        if pr.get("ssvc_label"):
+            bits.append(f"SSVC {pr['ssvc_label']}")
         p(" · ".join(bits), style="B")
         if pr.get("rationale"):
             p(pr["rationale"])
+        if pr.get("ssvc_rationale"):
+            p(pr["ssvc_rationale"])
     if v.get("rationale"):
         p(v["rationale"])
     if v.get("rhsa"):
@@ -349,11 +365,13 @@ def render_triage(tri):
     if not tri.get("cves"):
         return
     with st.expander(f"📊 Full exposure for {tri.get('account','')} — all tracked CVEs, "
-                     f"triaged by KEV + EPSS", expanded=True):
+                     f"triaged by KEV + EPSS + SSVC", expanded=True):
         st.caption("Start at the top. Name a CVE below to deep-dive it into options.")
         st.table([{"CVE": r["cve"],
                    "urgency": f"{TIER_BADGE.get(r['tier'],('⚪',''))[0]} "
                               f"{r['tier'].replace('_',' ')}",
+                   "SSVC": f"{SSVC_BADGE.get(r.get('ssvc_decision') or '', ('',''))[0]} "
+                           f"{r.get('ssvc_label') or '—'}",
                    "known-exploited": "⚠️ yes" if r.get("in_kev") else "—",
                    "EPSS": f"{r['epss']:.0%}" if r.get("epss") is not None else "—",
                    "affected": r.get("affected_count", 0),
@@ -497,9 +515,11 @@ def render_advice(intake, advice, account=None):
         pr = advice.get("priority") or {}
         pline = priority_line(pr)
         if pline:
-            (st.error if pr.get("tier") == "act_now" else
-             st.warning if pr.get("tier") != "routine" else st.info)(
-                f"{pline}\n\n{pr.get('rationale','')}")
+            (st.error if pr.get("tier") == "act_now" or pr.get("ssvc_decision") == "act" else
+             st.warning if pr.get("tier") != "routine" or pr.get("ssvc_decision") in
+             ("attend", "track_star") else st.info)(
+                f"{pline}\n\n{pr.get('rationale','')}"
+                + (f"\n\n{pr['ssvc_rationale']}" if pr.get("ssvc_rationale") else ""))
         st.write(vuln.get("rationale", ""))
         if vuln.get("rhsa"):
             st.write(f"Fixing erratum: `{vuln['rhsa']}` → `{vuln.get('fixed_nvra','')}`")

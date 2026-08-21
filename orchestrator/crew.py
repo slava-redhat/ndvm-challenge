@@ -38,7 +38,7 @@ import progress
 from playbook import build_playbook
 from models import (AdviceResult, ControlReport, CveChoice, ExploitSignal, Intake,
                     Sufficiency, VulnFinding)
-from priority import (adjust_tier, assess, classify, compliance_note,
+from priority import (adjust_tier, apply_ssvc_context, assess, classify, compliance_note,
                       compliance_signal, priority_note)
 from scoring import rank_options
 from tools import RagSearchTool, RedHatCveSearchTool, lookup_vuln_finding
@@ -296,7 +296,11 @@ def _audit_trail(intake: Intake, persona: str, researched: bool, sig: dict,
         {"step": "Prioritize exploitation risk", "basis": "Python · CISA KEV + FIRST EPSS",
          "detail": f"tier {sig['tier']}"
                    + (" · KNOWN-EXPLOITED (CISA KEV)" if sig.get("in_kev") else "") + epss,
-         "sources": sig.get("source_urls", [])},
+         "sources": [u for u in sig.get("source_urls", []) if "ssvc" not in u.lower()]},
+        {"step": "SSVC action decision", "basis": "Python · CISA/SEI SSVC Table 9",
+         "detail": (f"SSVC {sig.get('ssvc_label') or '—'}"
+                    + (f" · {sig['ssvc_rationale']}" if sig.get("ssvc_rationale") else "")),
+         "sources": [u for u in sig.get("source_urls", []) if "ssvc" in u.lower()]},
         {"step": "Retrieve grounded mitigations", "basis": "Hybrid RAG (pgvector + FTS)",
          "detail": f"{len(result.options)} sourced option(s) from the trusted knowledge base",
          "sources": opt_sources, "ms": int((_tA - _t0) * 1000)},
@@ -333,6 +337,10 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
         return {"needs_cve": True}
 
     sig = assess(intake.cve)
+    freeze = any(x in f"{intake.constraint} {answers}".lower()
+                 for x in ("freeze", "no reboot", "can't reboot", "cannot reboot",
+                           "quarter-end", "without reboot", "without a reboot"))
+    apply_ssvc_context(sig, answers=answers, freeze=freeze)
     a = _analysis_agents()
     synth = _synth_agent(persona)
     base = {**intake.model_dump(), "persona": persona,
@@ -388,8 +396,8 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
             "constraint '{constraint}', weighing the customer's specific answers:\n"
             "---\n{answers}\n---\n"
             "Exploitation urgency for this CVE: {priority_note} "
-            "If it is known-exploited or high-EPSS, favour the option that cuts exposure "
-            "FASTEST even at slightly higher effort. "
+            "If it is known-exploited, high-EPSS, or SSVC Act/Attend, favour the option that "
+            "cuts exposure FASTEST even at slightly higher effort. "
             "e.g. if they have no maintenance window soon, penalise anything needing a "
             "reboot; if the host is internet-facing, favour options that cut exposure now. "
             "Pick the recommended option and justify why the others rank lower FOR THIS case."
@@ -436,7 +444,9 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
             "the residual business risk is low. Reflect the exploitation urgency in plain "
             "terms — {priority_note} — e.g. 'attackers are already exploiting this' if "
             "known-exploited. Do not invent impact beyond the severity, exposure and this "
-            "urgency established above. Fill options from this ranking:\n---\n{strategy}\n---\n"
+            "urgency established above. If SSVC says Act under a freeze, say the business "
+            "must apply a non-disruptive interim now — not wait for a reboot window. Fill "
+            "options from this ranking:\n---\n{strategy}\n---\n"
             "each with disruption, effectiveness (1-4), effort (1-4) and source_urls. Do NOT "
             "include a 'confirm/verify not affected (VEX)' option, and do not mention VEX in "
             "the explanation, UNLESS the authoritative finding's fix_state is exactly "
@@ -468,6 +478,7 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
         sig["tier"] = adjust_tier(sig["tier"], csig["delta"], sig["in_kev"])
         sig["rationale"] = (sig["rationale"] + " " + compliance_note(csig)).strip()
     sig["compliance"] = csig
+    apply_ssvc_context(sig, severity=pinned.threat_severity, answers=answers, freeze=freeze)
     result.priority = ExploitSignal(
         **{k: v for k, v in sig.items() if k in ExploitSignal.model_fields})
 

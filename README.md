@@ -4,8 +4,8 @@ When patching isn't feasible yet, a Platform Owner describes their environment
 and a CVE and immediately gets **viable mitigation options → risk trade-offs → a
 recommended approach** — each **trusted** (traceable to Red Hat security data) and
 **personalized** to their platform. A CrewAI multi-agent flow does the reasoning, and a
-Python "trust spine" (Red Hat `fix_state` + CISA KEV + FIRST EPSS) supplies the facts
-so the model never guesses the things that must be right.
+Python "trust spine" (Red Hat `fix_state` + CISA KEV + FIRST EPSS + CISA/SEI SSVC)
+supplies the facts so the model never guesses the things that must be right.
 
 ## How it works
 A **router** agent classifies the user (Primary customer vs Secondary Red Hat TAM),
@@ -20,9 +20,12 @@ Router ─▶ Sufficiency Gate ─▶ Profiler ─▶ CVE Researcher ─▶ Vuln
 Alongside the crew, a deterministic **prioritization** step (`orchestrator/priority.py`)
 computes exploitation urgency from public feeds — **CISA KEV** (is it being actively
 exploited?) and **FIRST EPSS** (30-day exploit probability) — into a tier
-(`act_now` / `prioritize` / `scheduled` / `routine`). This is computed in Python, never
-LLM-guessed, and drives the UI urgency badge, the ranking prompt, and the plain-language
-**business risk** paragraph.
+(`act_now` / `prioritize` / `scheduled` / `routine`). Separately, **SSVC**
+(`orchestrator/ssvc.py`, CISA Table 9) turns those signals plus estate context into an
+action decision (`Act` / `Attend` / `Track*` / `Track`). Both are computed in Python,
+never LLM-guessed, and drive the UI urgency badge, the ranking prompt, and the
+plain-language **business risk** paragraph. Under a change freeze, SSVC **Act** means
+apply a non-disruptive interim now — not an emergency reboot.
 
 The **CVE Researcher** searches Red Hat's public CVE catalog (the data behind
 `access.redhat.com/security/security-updates`) by package / product / severity / date,
@@ -41,11 +44,12 @@ the UI tags each source by **provenance tier** (Red Hat authoritative → curate
 |---|---|---|
 | **Grounded CVE facts** (fix_state, CVSS, RHSA/NVRA) | Analyst + `redhat_security_data` | parsed in Python from Red Hat's public API |
 | **Exploitation urgency** (KEV + EPSS → tier) | `priority.py` | computed from CISA/FIRST feeds, not the LLM |
+| **SSVC action decision** (Act / Attend / Track*) | `ssvc.py` | CISA Table 9 in Python; inputs from KEV/EPSS + estate |
 | **Non-disruptive options** ranked by disruption/effectiveness/effort | Retriever + Strategist | options only from the local catalog/RAG; each cites a source |
 | **"You may already be protected"** | Control Validator | judges only controls the customer *stated* they run |
-| **Business-language risk** for a non-technical manager | synth `business_risk` | bounded by severity + exposure + KEV/EPSS above |
+| **Business-language risk** for a non-technical manager | synth `business_risk` | bounded by severity + exposure + KEV/EPSS + SSVC above |
 | **Ask-before-advising** gate | Sufficiency Judge | withholds advice + asks tick-box questions until the case fits |
-| **Respond at scale** — rank a whole estate's CVEs | `GET /triage` | KEV+EPSS ordering, customer-specific "not affected → routine" |
+| **Respond at scale** — rank a whole estate's CVEs | `GET /triage` | KEV+EPSS+SSVC ordering, customer-specific "not affected → routine" |
 | **Compliance context** (OpenSCAP) | account estate view | carried from the simulated Insights account |
 | **Provenance tiers** on every citation | UI + md/pdf export | source URL classified Red Hat / curated / external |
 | **Hybrid retrieval** (dense + lexical) | `db.rag_search_hybrid` | pgvector + Postgres FTS fused with RRF; golden-set eval |
@@ -92,7 +96,8 @@ In the UI, leave persona on **Auto-detect** and enter:
 > the quarter-end maintenance window. What can I do right now without breaking production?*
 
 You'll see the router pick the **Customer flow**, the gate confirm/ask about the case,
-the CVE's Red Hat `fix_state`, an **urgency badge** (KEV/EPSS tier), ranked
+the CVE's Red Hat `fix_state`, an **urgency badge** (KEV/EPSS tier) plus an **SSVC**
+action label (Act/Attend/Track*), ranked
 non-disruptive options (disruption / effectiveness / effort) with a recommended banner
 and citations, plus a plain-language **business-risk** summary the owner can forward to a
 non-technical manager.
@@ -116,7 +121,7 @@ evidence-first briefing (raw `fix_state` / RHSA / source URLs), and you unlock t
 
 1. **Whole-estate triage (respond at scale).** Pick *Meridian Telecom Group* — before
    deep-diving one CVE you get a **triage board** ranking every tracked CVE by KEV+EPSS
-   urgency. CVE-2024-1086 (in CISA KEV) sorts to `act_now`; the not-affected xz backdoor
+   urgency and SSVC decision. CVE-2024-1086 (in CISA KEV) sorts to `act_now`; the not-affected xz backdoor
    (CVE-2024-3094) is correctly demoted to `routine` for *this* estate even though it's
    scary globally — because no host here is exposed.
    ```bash
@@ -137,8 +142,9 @@ evidence-first briefing (raw `fix_state` / RHSA / source URLs), and you unlock t
    > can't reboot the clinical systems during business hours — what do I tell them?*
 
 4. **Consistent answers across the team.** Because facts come from Red Hat's data + KEV/EPSS
-   and every option cites a source, two TAMs asking the same question get the same grounded
-   briefing — the export (Markdown/PDF) carries the provenance tags so it can be relayed as-is.
+   + SSVC (Python) and every option cites a source, two TAMs asking the same question get the
+   same grounded briefing — the export (Markdown/PDF) carries the provenance tags so it can
+   be relayed as-is.
 
 5. **Compare the same CVE across two accounts.** CVE-2023-3390 is tracked by both
    *Meridian Telecom Group* and *Helios Health Systems*, but the estates differ (exposure,
@@ -174,7 +180,7 @@ evidence-first briefing (raw `fix_state` / RHSA / source URLs), and you unlock t
 ```
 GET  /health                     # liveness
 GET  /accounts                   # synthetic customer accounts (TAM lookup)
-GET  /triage?account=<name|org>  # rank a customer's CVEs by KEV+EPSS urgency
+GET  /triage?account=<name|org>  # rank a customer's CVEs by KEV+EPSS+SSVC urgency
 POST /advise                     # {message, persona?, answers?, force?, account?} → advice
 ```
 
@@ -213,5 +219,6 @@ cd orchestrator && PYTHONPATH=. python tests/eval_retrieval.py --mode both --k 6
 cd orchestrator && PYTHONPATH=. python tests/test_cve_parse.py   # trust-critical parser
 cd orchestrator && PYTHONPATH=. python tests/eval_retrieval.py --mode both  # retrieval quality
 python orchestrator/priority.py     # KEV/EPSS classifier self-check (network-free)
+python orchestrator/ssvc.py         # CISA SSVC Table 9 self-check (network-free)
 python orchestrator/models.py       # AdviceResult JSON-string coercion self-check
 ```

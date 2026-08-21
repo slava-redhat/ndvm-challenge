@@ -5,12 +5,17 @@ only explain — same trust rule as the CVE parser:
   - CISA KEV  : Known Exploited Vulnerabilities catalog (binary: listed => exploited).
   - FIRST EPSS: 30-day exploitation probability (0..1) + percentile.
 
+SSVC (SEI/CISA Table 9) answers a different question — what to *do* (Act/Attend/Track*).
+That decision is attached via ssvc.attach_ssvc after KEV/EPSS (see ssvc.py); no extra feed.
+
 Network is best-effort: if a feed is unreachable we degrade to severity-only tiering
 rather than fail the user's answer.
 """
 import time
 
 import requests
+
+from ssvc import attach_ssvc
 
 EPSS_API = "https://api.first.org/data/v1/epss"
 KEV_FEED = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
@@ -171,7 +176,17 @@ def priority_note(sig: dict) -> str:
         parts.append("KNOWN EXPLOITED (CISA KEV)")
     if sig.get("epss") is not None:
         parts.append(f"EPSS {sig['epss']:.1%} (percentile {sig.get('epss_percentile', 0):.0%})")
+    if sig.get("ssvc_label"):
+        parts.append(f"SSVC {sig['ssvc_label']}")
     return "; ".join(parts) + "."
+
+
+def apply_ssvc_context(sig: dict, *, severity: str = "", answers: str = "",
+                       internet_facing: bool = False, industry: str = "",
+                       freeze: bool = False) -> dict:
+    """Attach CISA SSVC decision using estate/answers context. Pure; no network."""
+    return attach_ssvc(sig, severity=severity, answers=answers,
+                       internet_facing=internet_facing, industry=industry, freeze=freeze)
 
 
 if __name__ == "__main__":  # self-check for the pure classifier (no network needed)
@@ -192,6 +207,11 @@ if __name__ == "__main__":  # self-check for the pure classifier (no network nee
     assert "could not be assessed" not in classify(False, 0.0, "")[1]
     assert priority_note({"tier": "act_now", "in_kev": True, "epss": 0.94,
                           "epss_percentile": 0.99}).startswith("urgency tier: act_now")
+    assert "SSVC Act" in priority_note({"tier": "act_now", "ssvc_label": "Act"})
+    _s = {"kev": True, "in_kev": True, "epss": 0.9, "source_urls": []}
+    apply_ssvc_context(_s, severity="Critical", internet_facing=True,
+                       industry="Telecommunications", freeze=True)
+    assert _s["ssvc_decision"] == "act" and "non-disruptive" in _s["ssvc_rationale"]
     # compliance risk modifier
     weak = compliance_signal([{"score": 55, "failed_rules": ["selinux_state_enforcing"]}])
     assert weak["delta"] == 1 and weak["posture"] == "weak"

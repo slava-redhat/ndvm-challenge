@@ -11,7 +11,7 @@ import progress
 from accounts import account_cves, list_accounts, load_account
 from crew import advise
 from db import save_recommendation
-from priority import assess
+from priority import apply_ssvc_context, assess
 
 # unknown sorts with prioritize (fail-closed) — never below routine
 _TIER_ORDER = {"act_now": 0, "prioritize": 1, "unknown": 1, "scheduled": 2, "routine": 3}
@@ -43,11 +43,13 @@ def accounts_ep():
 
 @app.get("/triage")
 def triage_ep(account: str):
-    """Respond at scale: rank ALL of a customer's tracked CVEs by KEV+EPSS urgency,
-    so a TAM sees the whole board before deep-diving one CVE."""
+    """Respond at scale: rank ALL of a customer's tracked CVEs by KEV+EPSS urgency
+    (plus SSVC action decision), so a TAM sees the whole board before deep-diving one CVE."""
     acc = load_account(account)
     if not acc:
         return {"status": "not_found"}
+    industry = (acc.get("account") or {}).get("industry", "")
+    freeze = "freeze" in str((acc.get("maintenance_policy") or {}).get("change_freeze", "")).lower()
     rows = []
     for c in account_cves(acc):
         sig = assess(c["cve"], c["severity"], kev_hint=c["known_exploited"])
@@ -56,8 +58,16 @@ def triage_ep(account: str):
         # however scary the CVE is globally. Keep the KEV/EPSS facts for context.
         if c["affected_count"] == 0:
             tier, rationale = "routine", "Not affected — no exposed hosts in this estate."
+        apply_ssvc_context(sig, severity=c["severity"], industry=industry,
+                           internet_facing=bool(c.get("internet_facing")), freeze=freeze)
+        if c["affected_count"] == 0:
+            sig["ssvc_decision"], sig["ssvc_label"] = "track", "Track"
+            sig["ssvc_rationale"] = "Not affected on this estate — SSVC Track."
         rows.append({**c, "tier": tier, "epss": sig["epss"],
-                     "in_kev": sig["in_kev"], "rationale": rationale})
+                     "in_kev": sig["in_kev"], "rationale": rationale,
+                     "ssvc_decision": sig.get("ssvc_decision"),
+                     "ssvc_label": sig.get("ssvc_label"),
+                     "ssvc_rationale": sig.get("ssvc_rationale")})
     rows.sort(key=lambda r: (_TIER_ORDER.get(r["tier"], 9), -(r["epss"] or 0),
                              -r["affected_count"]))
     return {"status": "ok", "account": acc["account"]["account_name"], "cves": rows}

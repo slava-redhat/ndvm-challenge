@@ -103,7 +103,7 @@ def default_cve(account: dict) -> str:
 
 def account_cves(account: dict) -> list[dict]:
     """Every CVE Insights tracks for this account, with affected/exposure counts — the
-    raw list a batch triage ('respond at scale') ranks by KEV+EPSS."""
+    raw list a batch triage ('respond at scale') ranks by KEV+EPSS+SSVC."""
     out = []
     for cve, v in (account.get("insights_vulnerability") or {}).items():
         if not isinstance(v, dict):
