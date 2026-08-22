@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator
+  template:
+    metadata:
+      labels:
+        app: orchestrator
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: orchestrator
+          image: ${REGISTRY}/orchestrator:${TAG}
+          securityContext:
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: ndvm-secrets
+          env:
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: "5432"
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /gcloud/application_default_credentials.json
+          volumeMounts:
+            - name: google-credentials
+              mountPath: /gcloud
+              readOnly: true
+          resources:
+            requests:
+              cpu: ${ORCHESTRATOR_CPU_REQUEST}
+              memory: ${ORCHESTRATOR_MEMORY_REQUEST}
+            limits:
+              cpu: ${ORCHESTRATOR_CPU_LIMIT}
+              memory: ${ORCHESTRATOR_MEMORY_LIMIT}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+      volumes:
+        - name: google-credentials
+          secret:
+            secretName: ndvm-google-credentials

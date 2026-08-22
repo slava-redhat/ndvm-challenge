@@ -1,0 +1,55 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ndvm
+  namespace: ${NAMESPACE}
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: orchestrator
+                port:
+                  number: 8000
+          - path: /accounts
+            pathType: Exact
+            backend:
+              service:
+                name: orchestrator
+                port:
+                  number: 8000
+          - path: /triage
+            pathType: Exact
+            backend:
+              service:
+                name: orchestrator
+                port:
+                  number: 8000
+          - path: /advise
+            pathType: Exact
+            backend:
+              service:
+                name: orchestrator
+                port:
+                  number: 8000
+          - path: /advise_stream
+            pathType: Exact
+            backend:
+              service:
+                name: orchestrator
+                port:
+                  number: 8000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ui
+                port:
+                  number: 8501

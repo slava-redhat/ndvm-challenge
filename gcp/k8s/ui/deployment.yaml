@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ui
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ui
+  template:
+    metadata:
+      labels:
+        app: ui
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: ui
+          image: ${REGISTRY}/ui:${TAG}
+          securityContext:
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: 8501
+          env:
+            - name: ORCHESTRATOR_URL
+              value: http://orchestrator:8000
+          resources:
+            requests:
+              cpu: ${UI_CPU_REQUEST}
+              memory: ${UI_MEMORY_REQUEST}
+            limits:
+              cpu: ${UI_CPU_LIMIT}
+              memory: ${UI_MEMORY_LIMIT}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8501
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8501
+            initialDelaySeconds: 30
+            periodSeconds: 15
