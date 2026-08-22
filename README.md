@@ -68,7 +68,8 @@ Vulkan, reached at `host.containers.internal:11434` — no ollama container.
 ## Prerequisites
 - podman + `podman compose`
 - Corporate Claude on Vertex reachable via ADC:
-  `gcloud auth application-default login` (creates `~/.config/gcloud/application_default_credentials.json`, mounted read-only into the containers)
+  `gcloud auth application-default login` (creates
+  `~/.config/gcloud/application_default_credentials.json`)
 - **Host Ollama serving on all interfaces** so containers can reach it (GPU via Vulkan):
   ```bash
   systemctl --user set-environment OLLAMA_HOST=0.0.0.0:11434
@@ -79,8 +80,8 @@ Vulkan, reached at `host.containers.internal:11434` — no ollama container.
 ## Run
 ```bash
 cp .env.example .env
-# edit .env: set VERTEXAI_PROJECT, VERTEXAI_LOCATION, and NDVM_LLM_MODEL to your
-# corporate Claude-on-Vertex model id.
+# edit .env: set Vertex project/model values, then copy ADC credentials to the repo.
+cp ~/.config/gcloud/application_default_credentials.json .application_default_credentials.json
 podman compose --env-file .env up --build
 ```
 `ingest` runs once and exits (it pulls the embed model + loads the corpus). Then open:
@@ -194,6 +195,14 @@ make stats     # corpus totals
 make pdfs      # where to drop PDFs + what's there
 make down / make clean   # stop / stop+wipe data volume
 ```
+
+## GKE deployment
+
+The production GKE workflow, rendered Kubernetes manifests, and Python deployment
+command are in [`gcp/GKE-WORKFLOW.md`](gcp/GKE-WORKFLOW.md). It deploys Postgres,
+the orchestrator, and the UI using the untracked ADC credential file stored as a
+Kubernetes Secret; `make vector-db-backup` and `make vector-db-restore` clone the
+local pgvector database into the target cluster.
 
 ## Adding platforms / mitigations / CVEs / docs
 Ingest is **incremental**: each source (yaml/pdf basename or CVE id) is recorded in

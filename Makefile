@@ -1,4 +1,4 @@
-.PHONY: help up down logs ingest reingest stats sources pdfs health test clean
+.PHONY: help up down logs ingest reingest stats sources pdfs health test clean vector-db-backup vector-db-restore
 
 # Bare `make` shows help. (`make -h`/`--help` are GNU make's own flags and print
 # make's usage — they can't be overridden by a target; use `make` or `make help`.)
@@ -8,6 +8,7 @@
 POSTGRES_USER ?= ndvm
 POSTGRES_DB   ?= ndvm
 DC = podman-compose --env-file .env
+VECTOR_DB_BACKUP ?= gcp/backups/ndvm-vector.sql.gz
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -49,6 +50,12 @@ pdfs: ## Where to drop hardening PDFs, and what's there now
 
 health: ## Orchestrator health check
 	@curl -s http://localhost:8000/health | python3 -m json.tool || echo "orchestrator not up"
+
+vector-db-backup: ## Export local pgvector database
+	python3 gcp/db_transfer.py backup --output "$(VECTOR_DB_BACKUP)"
+
+vector-db-restore: ## Restore VECTOR_DB_BACKUP into the current kubectl context
+	python3 gcp/db_transfer.py restore --input "$(VECTOR_DB_BACKUP)"
 
 test: ## Run the trust-critical CVE parser test
 	cd orchestrator && PYTHONPATH=. python3 tests/test_cve_parse.py

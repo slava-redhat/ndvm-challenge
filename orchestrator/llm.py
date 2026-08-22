@@ -12,11 +12,8 @@ if _PROJECT:
     os.environ.setdefault("VERTEXAI_PROJECT", _PROJECT)
 os.environ.setdefault("VERTEXAI_LOCATION", _LOCATION)
 
-_MODEL = os.environ.get("NDVM_LLM_MODEL", "vertex_ai/claude-sonnet-4@20250514")
-# Fast tier for the mechanical agents (router, CVE lookup, RAG retrieval) — Haiku is
-# ~5x faster than Sonnet on Vertex for the same tool-calling work. Set NDVM_FAST_LLM_MODEL
-# to your strong model id to disable tiering (e.g. if Haiku isn't enabled in your project).
-_FAST_MODEL = os.environ.get("NDVM_FAST_LLM_MODEL", "vertex_ai/claude-haiku-4-5@20251001")
+_MODEL = os.environ.get("NDVM_LLM_MODEL", "vertex_ai/claude-sonnet-4-5@20250929")
+_FAST_MODEL = os.environ.get("NDVM_FAST_LLM_MODEL", _MODEL)
 _TIMEOUT = float(os.environ.get("NDVM_LLM_TIMEOUT", "90"))
 
 

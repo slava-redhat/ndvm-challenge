@@ -128,6 +128,8 @@ def _analysis_agents() -> dict[str, Agent]:
 
 
 def _synth_agent(persona: str) -> Agent:
+    # Wave C is narration/packaging over Python-pinned facts + Wave B ranking — Haiku
+    # is enough and cuts the dominant ~80–120s Sonnet synth cost. Strategist stays Sonnet.
     if persona == "secondary":
         return Agent(
             role="TAM Technical Briefing Writer",
@@ -137,7 +139,7 @@ def _synth_agent(persona: str) -> Agent:
                 "raw fix_state / RHSA / VEX references included, ready to reuse across "
                 "similar cases."
             ),
-            llm=get_llm(), verbose=False,
+            llm=get_llm(fast=True), verbose=False,
         )
     return Agent(
         role="Customer Mitigation Advisor",
@@ -147,7 +149,7 @@ def _synth_agent(persona: str) -> Agent:
             "viable options, the trade-offs, a clear recommended approach, and the proof "
             "behind it — so they can act today without fear."
         ),
-        llm=get_llm(), verbose=False,
+        llm=get_llm(fast=True), verbose=False,
     )
 
 

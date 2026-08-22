@@ -1,4 +1,4 @@
-"""Local embeddings via host Ollama (AMD 780M GPU / Vulkan). Claude/Vertex has no embeddings API.
+"""Local embeddings via host Ollama (AMD 780M GPU / Vulkan). Claude has no embeddings API.
 
 nomic-embed-text requires task prefixes: search_document at ingest, search_query at retrieve.
 """
