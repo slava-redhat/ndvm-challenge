@@ -106,9 +106,12 @@ python3 gcp/gke.py deploy --tag v1.0.0
 
 The command builds and pushes the orchestrator and UI images concurrently with Cloud
 Build, creates the `ndvm-secrets` Secret from `.env` on its first run, and applies the
-rendered manifests. `OLLAMA_*`, `INGEST_*`, and local ADC variables are intentionally
-excluded from the application Secret. Each deployment synchronizes both Secrets and
-restarts the orchestrator. To copy a later `.env` or ADC credential change:
+rendered manifests. It also deploys a private, persistent Ollama service and pulls
+`nomic-embed-text`; the orchestrator reaches it at `http://ollama:11434`. `OLLAMA_*`,
+`INGEST_*`, and local ADC variables are intentionally excluded from the application
+Secret so the GKE deployment always uses the embedding model compatible with the
+restored local vector database. Each deployment synchronizes both Secrets and restarts
+the orchestrator. To copy a later `.env` or ADC credential change:
 
 ```bash
 python3 gcp/gke.py sync-secrets
@@ -221,12 +224,13 @@ python3 gcp/gke.py teardown --yes
 
 ## Resource Tiers
 
-| Tier | vCPU | RAM | ~Cost/mo | Postgres | Orchestrator | UI |
-|------|------|-----|----------|----------|--------------|----|
-| `e2-medium` | 1 (shared) | 4GB | $25 | 25m | 10m | 10m |
-| `e2-standard-2` | 2 | 8GB | $49 | 100m | 100m | 100m |
-| `e2-standard-4` | 4 | 16GB | $97 | 250m | 250m | 250m |
+| Tier | vCPU | RAM | ~Cost/mo | Postgres | Ollama | Orchestrator | UI |
+|------|------|-----|----------|----------|--------|--------------|----|
+| `e2-medium` | 1 (shared) | 4GB | $25 | 25m | 250m | 10m | 10m |
+| `e2-standard-2` | 2 | 8GB | $49 | 100m | 500m | 100m | 100m |
+| `e2-standard-4` | 4 | 16GB | $97 | 250m | 1000m | 250m | 250m |
 
 The CPU values above are pod requests. Each manifest also assigns a bounded higher
-CPU and memory limit, so a service can burst without reserving the whole node. Redis,
-Umami, and the local-only ingestion workflow are intentionally absent from GKE.
+CPU and memory limit, so a service can burst without reserving the whole node. Ollama
+is CPU-only and stores its embedding model on a 5Gi persistent volume. Redis, Umami,
+and the local-only ingestion workflow are intentionally absent from GKE.

@@ -23,18 +23,21 @@ K8S_DIR = GCP_DIR / "k8s"
 TIERS = {
     "e2-medium": {
         "postgres": ("25m", "128Mi", "500m", "512Mi"),
+        "ollama": ("250m", "512Mi", "1000m", "1Gi"),
         "ingest": ("10m", "128Mi", "500m", "512Mi"),
         "orchestrator": ("10m", "256Mi", "500m", "1Gi"),
         "ui": ("10m", "128Mi", "500m", "512Mi"),
     },
     "e2-standard-2": {
         "postgres": ("100m", "256Mi", "1000m", "1Gi"),
+        "ollama": ("500m", "1Gi", "2000m", "2Gi"),
         "ingest": ("50m", "256Mi", "500m", "1Gi"),
         "orchestrator": ("100m", "256Mi", "500m", "1Gi"),
         "ui": ("100m", "256Mi", "500m", "1Gi"),
     },
     "e2-standard-4": {
         "postgres": ("250m", "512Mi", "2000m", "2Gi"),
+        "ollama": ("1000m", "1Gi", "4000m", "2Gi"),
         "ingest": ("100m", "512Mi", "1000m", "2Gi"),
         "orchestrator": ("250m", "512Mi", "1000m", "2Gi"),
         "ui": ("250m", "512Mi", "1000m", "2Gi"),
@@ -295,7 +298,8 @@ def deploy(config: Config, tag: str) -> None:
     render_and_apply(config, tag, only={"namespace.yaml", "serviceaccount.yaml"})
     create_secret_and_schema(config)
     render_and_apply(config, tag, only={"service.yaml", "statefulset.yaml"})
-    kubectl(config, ["rollout", "status", "statefulset/postgres", "--timeout=180s"])
+    for statefulset in ("postgres", "ollama"):
+        kubectl(config, ["rollout", "status", f"statefulset/{statefulset}", "--timeout=600s"])
 
     render_and_apply(config, tag, only={"deployment.yaml", "ingress.yaml"})
     for deployment in ("orchestrator", "ui"):

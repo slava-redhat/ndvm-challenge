@@ -32,6 +32,10 @@ spec:
               value: postgres
             - name: PGPORT
               value: "5432"
+            - name: OLLAMA_HOST
+              value: http://ollama:11434
+            - name: OLLAMA_EMBED_MODEL
+              value: nomic-embed-text
             - name: GOOGLE_APPLICATION_CREDENTIALS
               value: /gcloud/application_default_credentials.json
           volumeMounts:
