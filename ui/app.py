@@ -124,6 +124,12 @@ def report_md(intake: dict, advice: dict) -> str:
             out.append(f"- **{c.get('control','')}** — {c.get('status','?').replace('_',' ')}"
                        + (f": {c['rationale']}" if c.get("rationale") else ""))
             out += [f"  - source: {src_tag(s)}" for s in c.get("source_urls", [])]
+    if advice.get("decision_summary") or advice.get("residual_before"):
+        out += ["\n## Decision package",
+                f"- **Residual before interim:** {(advice.get('residual_before') or '—').replace('_', ' ')}",
+                f"- **Residual after recommended:** {(advice.get('residual_after') or '—').replace('_', ' ')}"]
+        if advice.get("decision_summary"):
+            out.append(f"- {advice['decision_summary']}")
     if advice.get("business_risk"):
         out += ["\n## What this means for your business", advice["business_risk"]]
     out.append("\n## Mitigation options (ranked)")
@@ -270,6 +276,16 @@ def report_pdf(intake: dict, advice: dict, account: dict | None = None) -> bytes
             for src in c.get("source_urls", []):
                 p(src_tag(src), size=8)
             pdf.ln(1)
+
+    # --- Decision package (after controls; same order as Streamlit / Markdown) ---
+    if advice.get("decision_summary") or advice.get("residual_before"):
+        rule()
+        h("Decision package", 14)
+        p(f"Residual before interim: {(advice.get('residual_before') or '—').replace('_', ' ')}      "
+          f"Residual after recommended: {(advice.get('residual_after') or '—').replace('_', ' ')}",
+          style="B")
+        if advice.get("decision_summary"):
+            p(advice["decision_summary"])
 
     # --- Business risk ---
     risk = advice.get("business_risk")
@@ -538,6 +554,18 @@ def render_advice(intake, advice, account=None):
                 st.write(c.get("rationale", ""))
                 for src in c.get("source_urls", []):
                     st.caption(src_label(src))
+
+    before = advice.get("residual_before") or ""
+    after = advice.get("residual_after") or ""
+    summary = advice.get("decision_summary") or ""
+    if before or after or summary:
+        with st.container(border=True):
+            st.markdown("### Decision package")
+            c1, c2 = st.columns(2)
+            c1.metric("Residual before interim", before.replace("_", " ").title() or "—")
+            c2.metric("Residual after recommended", after.replace("_", " ").title() or "—")
+            if summary:
+                st.info(summary)
 
     risk = advice.get("business_risk")
     if risk:

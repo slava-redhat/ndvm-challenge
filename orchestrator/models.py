@@ -102,6 +102,10 @@ class AdviceResult(BaseModel):
     vulnerability: VulnFinding
     priority: Optional[ExploitSignal] = None   # KEV/EPSS-driven urgency (set in Python)
     business_risk: str = ""            # plain-language risk for a non-technical decision-maker
+    # Decision Package — residual labels + one-line summary (Python-owned; see priority.build_decision_package)
+    residual_before: str = ""          # high|elevated|moderate|low|minimal|unknown
+    residual_after: str = ""
+    decision_summary: str = ""
     existing_controls: List[ControlAssessment] = []   # controls David already has
     options: List[MitigationOption]
     recommended_title: str

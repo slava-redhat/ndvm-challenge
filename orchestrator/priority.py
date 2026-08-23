@@ -189,6 +189,90 @@ def apply_ssvc_context(sig: dict, *, severity: str = "", answers: str = "",
                        internet_facing=internet_facing, industry=industry, freeze=freeze)
 
 
+# Residual labels for the Decision Package (CAB/TAM strip). Ordered high → low risk.
+_RESIDUAL_ORDER = ("high", "elevated", "moderate", "low", "minimal")
+
+
+def _base_residual(sig: dict) -> str:
+    """Map current SSVC + urgency tier to a residual-risk label (before interim)."""
+    if sig.get("tier") == "unknown" and not sig.get("ssvc_decision"):
+        return "unknown"
+    d, t = sig.get("ssvc_decision"), sig.get("tier")
+    if d == "act" or t == "act_now":
+        return "high"
+    if d == "attend" or t == "prioritize":
+        return "elevated"
+    if d == "track_star" or t == "scheduled":
+        return "moderate"
+    return "low"
+
+
+def _ease_residual(label: str, steps: int) -> str:
+    if label == "unknown" or steps <= 0:
+        return label
+    try:
+        i = _RESIDUAL_ORDER.index(label)
+    except ValueError:
+        return label
+    return _RESIDUAL_ORDER[min(len(_RESIDUAL_ORDER) - 1, i + steps)]
+
+
+def build_decision_package(sig: dict, *, controls: list | None = None,
+                           recommended=None, freeze: bool = False,
+                           fix_state: str = "") -> dict:
+    """Python-owned Decision Package fields. LLM never invents these labels.
+
+    Before = residual from current SSVC/urgency (+ already-mitigated controls).
+    After  = same label eased by the recommended interim (or already low if protected).
+    """
+    controls = controls or []
+    mitigated = any(getattr(c, "status", None) == "mitigated"
+                    or (isinstance(c, dict) and c.get("status") == "mitigated")
+                    for c in controls)
+    before = "low" if mitigated else _base_residual(sig)
+    if (fix_state or "") == "Not affected":
+        before, after = "minimal", "minimal"
+    elif mitigated:
+        after = "low"
+    elif recommended is not None:
+        disruption = (getattr(recommended, "disruption", None)
+                      or (recommended.get("disruption") if isinstance(recommended, dict)
+                          else "") or "")
+        eff = int(getattr(recommended, "effectiveness", None)
+                  or (recommended.get("effectiveness") if isinstance(recommended, dict)
+                      else 0) or 0)
+        steps = 2 if disruption.lower() in ("none", "low") and eff >= 3 else 1
+        after = _ease_residual(before, steps)
+    else:
+        after = before
+
+    ssvc = sig.get("ssvc_label") or "—"
+    tier = (sig.get("tier") or "unknown").replace("_", " ")
+    rec_title = ""
+    if recommended is not None:
+        rec_title = (getattr(recommended, "title", None)
+                     or (recommended.get("title") if isinstance(recommended, dict) else "")
+                     or "")
+    if (fix_state or "") == "Not affected":
+        summary = (f"Not affected (VEX) — residual {after}. SSVC {ssvc}; urgency {tier}. "
+                   f"No interim change required.")
+    elif mitigated:
+        summary = (f"Existing control already mitigates — residual {after}. "
+                   f"SSVC {ssvc}; urgency {tier}. Confirm the control stays in force.")
+    elif rec_title:
+        freeze_bit = (" Under change freeze: apply a non-disruptive interim now — not a reboot."
+                      if freeze and sig.get("ssvc_decision") == "act" else "")
+        summary = (f"Residual before interim: {before}. Apply «{rec_title}» → residual {after}. "
+                   f"SSVC {ssvc}; urgency {tier}.{freeze_bit}")
+    else:
+        summary = (f"Residual before interim: {before} (no ranked option yet). "
+                   f"SSVC {ssvc}; urgency {tier}.")
+
+    return {"residual_before": before, "residual_after": after,
+            "decision_summary": summary}
+
+
+
 if __name__ == "__main__":  # self-check for the pure classifier (no network needed)
     assert classify(True, 0.9, "Critical")[0] == "act_now"
     assert classify(False, 0.6)[0] == "act_now"
@@ -227,4 +311,18 @@ if __name__ == "__main__":  # self-check for the pure classifier (no network nee
     assert adjust_tier("act_now", 1) == "act_now"               # can't exceed the top tier
     assert adjust_tier("unknown", 1) == "prioritize"
     assert compliance_note(weak).startswith("Compliance posture WEAK")
+    # Decision Package: pure labels from SSVC/tier + recommended interim
+    _pkg = build_decision_package(
+        {"tier": "act_now", "ssvc_decision": "act", "ssvc_label": "Act"},
+        recommended=type("O", (), {"title": "kpatch", "disruption": "none",
+                                   "effectiveness": 4})(),
+        freeze=True)
+    assert _pkg["residual_before"] == "high" and _pkg["residual_after"] == "moderate"
+    assert "kpatch" in _pkg["decision_summary"] and "non-disruptive" in _pkg["decision_summary"]
+    assert build_decision_package(
+        {"tier": "scheduled", "ssvc_label": "Track"},
+        controls=[{"status": "mitigated"}])["residual_before"] == "low"
+    assert build_decision_package(
+        {"tier": "prioritize", "ssvc_label": "Attend"},
+        fix_state="Not affected")["residual_after"] == "minimal"
     print("ok")

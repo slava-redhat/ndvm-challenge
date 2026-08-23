@@ -38,8 +38,8 @@ import progress
 from playbook import build_playbook
 from models import (AdviceResult, ControlReport, CveChoice, ExploitSignal, Intake,
                     Sufficiency, VulnFinding)
-from priority import (adjust_tier, apply_ssvc_context, assess, classify, compliance_note,
-                      compliance_signal, priority_note)
+from priority import (adjust_tier, apply_ssvc_context, assess, build_decision_package,
+                      classify, compliance_note, compliance_signal, priority_note)
 from scoring import rank_options
 from tools import RagSearchTool, RedHatCveSearchTool, lookup_vuln_finding
 
@@ -313,6 +313,10 @@ def _audit_trail(intake: Intake, persona: str, researched: bool, sig: dict,
         {"step": "Rank options & pick the recommendation", "basis": "Python · deterministic score",
          "detail": f"ordered by disruption/effectiveness/effort for the constraint → "
                    f"recommended “{result.recommended_title}”", "sources": []},
+        {"step": "Decision package (residual risk)", "basis": "Python · SSVC + urgency + option",
+         "detail": (f"{result.residual_before} → {result.residual_after}"
+                    + (f" · {result.decision_summary}" if result.decision_summary else "")),
+         "sources": []},
         {"step": "Synthesize the briefing", "basis": "LLM",
          "detail": "assembled options, trade-offs and business-risk into the final answer",
          "sources": [], "ms": int((_tC - _tB) * 1000)},
@@ -448,7 +452,9 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
             "terms — {priority_note} — e.g. 'attackers are already exploiting this' if "
             "known-exploited. Do not invent impact beyond the severity, exposure and this "
             "urgency established above. If SSVC says Act under a freeze, say the business "
-            "must apply a non-disruptive interim now — not wait for a reboot window. Fill "
+            "must apply a non-disruptive interim now — not wait for a reboot window. Leave "
+            "'residual_before', 'residual_after', and 'decision_summary' empty — Python fills "
+            "those Decision Package labels after ranking. Fill "
             "options from this ranking:\n---\n{strategy}\n---\n"
             "each with disruption, effectiveness (1-4), effort (1-4) and source_urls. Do NOT "
             "include a 'confirm/verify not affected (VEX)' option, and do not mention VEX in "
@@ -503,6 +509,14 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
             steps=rec.steps, source_urls=rec.source_urls, cve=v.cve_id,
             fix_state=v.fix_state, rhsa=v.rhsa or "", product=intake.product,
             version=intake.version)
+    else:
+        rec = None
+    pkg = build_decision_package(
+        sig, controls=result.existing_controls, recommended=rec, freeze=freeze,
+        fix_state=result.vulnerability.fix_state)
+    result.residual_before = pkg["residual_before"]
+    result.residual_after = pkg["residual_after"]
+    result.decision_summary = pkg["decision_summary"]
     d = result.model_dump()
     d["audit"] = _audit_trail(intake, persona, researched, sig, result,
                               len(control_report.controls), (_t0, _tA, _tB, _tC))
