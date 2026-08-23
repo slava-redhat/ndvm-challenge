@@ -50,6 +50,10 @@ def rag_search(query: str, platform: str | None = None, k: int = 6) -> list[dict
     sql += " ORDER BY embedding <=> %s::vector LIMIT %s"
     params += [qvec, k]
     with _conn() as c, c.cursor() as cur:
+        if platform and platform != "other":
+            # HNSW applies metadata filters after its nearest-neighbor candidate list,
+            # which can produce zero results even when matching chunks exist.
+            cur.execute("SET LOCAL enable_indexscan = off")
         cur.execute(sql, params)
         return [
             {"text": t, "source_url": s, "metadata": m}
@@ -78,6 +82,9 @@ def rag_search_hybrid(query: str, platform: str | None = None, k: int = 6,
         where = " WHERE metadata->>'platform' IN (%s, 'any')"
         params = [platform]
     with _conn() as c, c.cursor() as cur:
+        if platform and platform != "other":
+            # See rag_search: exact scan preserves recall for filtered HNSW queries.
+            cur.execute("SET LOCAL enable_indexscan = off")
         cur.execute(f"SELECT id FROM doc_chunk{where} "
                     f"ORDER BY embedding <=> %s::vector LIMIT %s", params + [qvec, pool])
         dense = [r[0] for r in cur.fetchall()]

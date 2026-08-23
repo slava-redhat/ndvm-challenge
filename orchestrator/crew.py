@@ -41,7 +41,8 @@ from models import (AdviceResult, ControlReport, CveChoice, ExploitSignal, Intak
 from priority import (adjust_tier, apply_ssvc_context, assess, build_decision_package,
                       classify, compliance_note, compliance_signal, priority_note)
 from scoring import rank_options
-from tools import RagSearchTool, RedHatCveSearchTool, lookup_vuln_finding
+from db import rag_search_hybrid
+from tools import RedHatCveSearchTool, lookup_vuln_finding
 
 _WAVE_TIMEOUT = float(_os.environ.get("NDVM_WAVE_TIMEOUT", "180"))
 _SYNTH_MAX_TOKENS = int(_os.environ.get("NDVM_SYNTH_MAX_TOKENS", "8192"))
@@ -79,7 +80,6 @@ def _analysis_agents() -> dict[str, Agent]:
     # Fresh tool + LLM instances per request: concurrent waves and concurrent HTTP
     # requests must not share mutable CrewAI/LiteLLM clients.
     search_tool = RedHatCveSearchTool()
-    rag_tool = RagSearchTool()
     researcher = Agent(
         role="Red Hat CVE Researcher",
         goal="Discover which CVEs actually affect the customer's software and surface the ones that matter.",
@@ -90,16 +90,6 @@ def _analysis_agents() -> dict[str, Agent]:
             "advisories from Red Hat's own public data, never from memory."
         ),
         tools=[search_tool], llm=get_llm(), verbose=False,
-    )
-    retriever = Agent(
-        role="Mitigation Knowledge Retriever",
-        goal="Retrieve only grounded, sourced, non-disruptive mitigation options.",
-        backstory=(
-            "You know where the trusted mitigation guidance lives and you retrieve only "
-            "options that fit the platform. You never invent a control that isn't in the "
-            "knowledge base."
-        ),
-        tools=[rag_tool], llm=get_llm(fast=True), verbose=False,
     )
     validator = Agent(
         role="Compensating Control Validator",
@@ -124,8 +114,7 @@ def _analysis_agents() -> dict[str, Agent]:
         ),
         llm=get_llm(), verbose=False,
     )
-    return {"researcher": researcher, "retriever": retriever,
-            "validator": validator, "strategist": strategist}
+    return {"researcher": researcher, "validator": validator, "strategist": strategist}
 
 
 def _synth_agent(persona: str) -> Agent:
@@ -330,6 +319,24 @@ def _is_vex_option(o) -> bool:
     return (o.action_type or "").lower() == "verify" or "vex" in t or "not affected" in t
 
 
+def _rag_context(hits: list[dict]) -> str:
+    return "\n\n".join(
+        f"[source: {hit['source_url']}] {hit['text']}" for hit in hits
+    )
+
+
+def _knowledge_base_unavailable(message: str) -> dict:
+    return {"knowledge_base_unavailable": True, "message": message}
+
+
+def _bind_retrieved_sources(options, sources: set[str]) -> None:
+    """Replace model-written links with citations the RAG query actually returned."""
+    verified = sorted(sources)
+    for option in options:
+        matching = [url for url in option.source_urls if url in sources]
+        option.source_urls = (matching or verified)[:2]
+
+
 def run_advice(intake: Intake, persona: str, answers: str = "",
                compliance: list | None = None) -> dict:
     progress.check_cancel()
@@ -348,32 +355,38 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
                  for x in ("freeze", "no reboot", "can't reboot", "cannot reboot",
                            "quarter-end", "without reboot", "without a reboot"))
     apply_ssvc_context(sig, answers=answers, freeze=freeze)
-    a = _analysis_agents()
-    synth = _synth_agent(persona)
     base = {**intake.model_dump(), "persona": persona,
             "answers": _esc(answers or "none"),
             "priority_note": _esc(priority_note(sig))}
 
-    # ---- Wave A: pin VulnFinding in Python (trust spine) ‖ RAG retrieve
-    retrieve = Task(
-        description=(
-            "Use mitigation_rag_search to find non-disruptive mitigations for platform "
-            "'{platform}' relevant to {cve}, given the constraint '{constraint}'. List each "
-            "candidate with its source URL. Use ONLY retrieved options."
-        ),
-        expected_output="A list of grounded candidate mitigations with sources.",
-        agent=a["retriever"],
-    )
+    # ---- Wave A: pin VulnFinding in Python (trust spine) ‖ deterministic RAG retrieve
     progress.emit("Grounding the CVE in Red Hat data + retrieving mitigations")
     _t0 = time.time()
     progress.check_cancel()
     with ThreadPoolExecutor(max_workers=2) as ex:
         fp = ex.submit(lookup_vuln_finding, intake.cve, intake.product)
-        fr = ex.submit(_kick, a["retriever"], retrieve, base)
+        fr = ex.submit(rag_search_hybrid, f"{intake.cve} {intake.constraint}", intake.platform)
         pinned: VulnFinding = fp.result(timeout=_WAVE_TIMEOUT)
-        retrieved = fr.result(timeout=_WAVE_TIMEOUT).raw
+        try:
+            rag_hits = fr.result(timeout=_WAVE_TIMEOUT)
+        except Exception as error:
+            return _knowledge_base_unavailable(
+                f"Trusted mitigation retrieval failed ({type(error).__name__}). "
+                "The RAG knowledge base may be offline. Check the vector database "
+                "restore and Ollama embedding service, then retry."
+            )
+    if not rag_hits:
+        return _knowledge_base_unavailable(
+            "No verified mitigation guidance is available. The RAG knowledge base is "
+            "offline or empty. Check the vector database restore and Ollama embedding "
+            "service, then retry."
+        )
     _tA = time.time()
     analyst_finding = pinned.model_dump_json()
+    retrieved = _rag_context(rag_hits)
+    trusted_sources = {hit["source_url"] for hit in rag_hits if hit.get("source_url")}
+    a = _analysis_agents()
+    synth = _synth_agent(persona)
 
     # ---- Wave B: validator + strategist (injected values escaped for interpolate_only)
     progress.check_cancel()
@@ -457,6 +470,8 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
             "those Decision Package labels after ranking. Fill "
             "options from this ranking:\n---\n{strategy}\n---\n"
             "each with disruption, effectiveness (1-4), effort (1-4) and source_urls. Do NOT "
+            "invent or normalize source URLs: copy each option's source_urls exactly from "
+            "the retrieved candidate guidance above. "
             "include a 'confirm/verify not affected (VEX)' option, and do not mention VEX in "
             "the explanation, UNLESS the authoritative finding's fix_state is exactly "
             "'Not affected'. Write a "
@@ -483,6 +498,7 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
 
     # Trust spine: always overwrite LLM vulnerability with Python-pinned Red Hat facts.
     result.vulnerability = pinned
+    _bind_retrieved_sources(result.options, trusted_sources)
     sig["tier"], sig["rationale"] = classify(sig.get("kev", sig["in_kev"]), sig["epss"],
                                              pinned.threat_severity)
     csig = compliance_signal(compliance or [])
@@ -560,6 +576,18 @@ class NDVMFlow(Flow[NDVMState]):
             if not self.state.intake.cve.strip():
                 self.state.intake.cve = default_cve(acc)
             self.state.intake.account = acc["account"]["account_name"]
+            affected_hosts = {
+                row.get("hostname")
+                for row in (acc.get("insights_vulnerability", {})
+                            .get(self.state.intake.cve, {})
+                            .get("affected_systems", []))
+            }
+            affected_systems = [
+                system for system in acc.get("systems", [])
+                if system.get("hostname") in affected_hosts
+            ]
+            if affected_systems and all(system.get("rhel_version") for system in affected_systems):
+                self.state.intake.platform = "rhel"
             estate = estate_as_answers(acc, self.state.intake.cve)
             self.state.answers = (estate + "\n" + self.state.answers).strip()
             self.state.account_view = account_view(acc, self.state.intake.cve)
@@ -626,6 +654,9 @@ def advise(message: str, forced_persona: str = "", answers: str = "",
                 "message": ("I couldn't determine a specific CVE from your request. Please "
                             "give me a CVE id (format CVE-YYYY-NNNN) — or name the exact "
                             "product/package so I can look one up.")}
+    if isinstance(s.result, dict) and s.result.get("knowledge_base_unavailable"):
+        return {"intake": s.intake.model_dump(), "status": "knowledge_base_unavailable",
+                "advice": None, "message": s.result["message"]}
     if s.result is None:
         return {"intake": s.intake.model_dump(), "status": "error", "advice": None,
                 "message": "advice flow completed without a result"}

@@ -16,8 +16,23 @@ import yaml
 from pypdf import PdfReader
 
 from embeddings import embed, embed_batch, ensure_model
+from fetch_pdfs import GUIDES, build as build_pdf_url
 
 DATA = os.environ.get("DATA_DIR", "/app/data")
+
+def _pdf_platform(product: str) -> str:
+    if product == "openshift_container_platform":
+        return "openshift"
+    if product in {"red_hat_enterprise_linux", "red_hat_insights", "red_hat_satellite"}:
+        return "rhel"
+    return "other"
+
+
+PDF_SOURCES = {
+    filename: (url, _pdf_platform(product))
+    for product, _title, _version, _guide, _guide_title in GUIDES
+    for url, filename in [build_pdf_url(product, _title, _version, _guide, _guide_title)]
+}
 SECDATA = "https://access.redhat.com/hydra/rest/securitydata/cve/{cve}.json"
 SEED_CVES = os.environ.get(
     "INGEST_CVES",
@@ -129,9 +144,24 @@ def chunk(text: str, size: int = 800, overlap: int = 100):
 
 
 def load_pdfs(cur):
+    # PDFs outside the current curated guide list may remain from an earlier corpus.
+    # They must not leak into platform-specific RAG retrieval as generic "any" content.
+    cur.execute(
+        "UPDATE doc_chunk SET metadata = jsonb_set(metadata, '{platform}', '\"other\"'::jsonb) "
+        "WHERE metadata->>'doc_type' = 'pdf' AND metadata->>'platform' = 'any'"
+    )
     for path in sorted(glob.glob(f"{DATA}/pdfs/*.pdf")):
         raw = open(path, "rb").read()
         src, digest = os.path.basename(path), sha(raw)
+        source_url, platform = PDF_SOURCES.get(src, (src, "any"))
+        # Older ingestions stored only local filenames and a generic platform. Updating
+        # metadata does not alter vectors, so unchanged PDFs do not need re-embedding.
+        cur.execute(
+            "UPDATE doc_chunk SET source_url = %s, "
+            "metadata = jsonb_set(metadata, '{platform}', to_jsonb(%s::text)) "
+            "WHERE metadata->>'source' = %s",
+            (source_url, platform, src),
+        )
         if seen(cur, src, digest):
             print(f"unchanged: {src}"); continue
         try:
@@ -143,7 +173,7 @@ def load_pdfs(cur):
         texts = [c for c in chunk(full) if c.strip()]
         vecs = embed_batch(texts, task="search_document") if texts else []
         for t, emb in zip(texts, vecs):
-            add_chunk(cur, t, src, "any", "pdf", src, embedding=emb)
+            add_chunk(cur, t, source_url, platform, "pdf", src, embedding=emb)
         mark(cur, src, "pdf", digest, len(texts))
         print(f"pdf loaded: {src} ({len(texts)} chunks)")
 
