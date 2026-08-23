@@ -13,12 +13,14 @@ if _PROJECT:
 os.environ.setdefault("VERTEXAI_LOCATION", _LOCATION)
 
 _MODEL = os.environ.get("NDVM_LLM_MODEL", "vertex_ai/claude-sonnet-4-5@20250929")
-_FAST_MODEL = os.environ.get("NDVM_FAST_LLM_MODEL", _MODEL)
+# Fast tier (router, RAG retriever, Wave C synth). Prefer Haiku when Model Garden allows it.
+_FAST_MODEL = os.environ.get("NDVM_FAST_LLM_MODEL", "vertex_ai/claude-haiku-4-5@20251001")
 _TIMEOUT = float(os.environ.get("NDVM_LLM_TIMEOUT", "90"))
 
 
 def get_llm(temperature: float = 0.2, fast: bool = False,
-            timeout: float | None = None) -> LLM:
+            timeout: float | None = None, max_tokens: int | None = None) -> LLM:
     return LLM(model=_FAST_MODEL if fast else _MODEL, temperature=temperature,
                vertex_project=_PROJECT, vertex_location=_LOCATION,
-               timeout=timeout if timeout is not None else _TIMEOUT)
+               timeout=timeout if timeout is not None else _TIMEOUT,
+               max_tokens=max_tokens)

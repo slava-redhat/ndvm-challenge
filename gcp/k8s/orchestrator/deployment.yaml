@@ -38,6 +38,9 @@ spec:
             - name: google-credentials
               mountPath: /gcloud
               readOnly: true
+            - name: account-data
+              mountPath: /app/data/accounts
+              readOnly: true
           resources:
             requests:
               cpu: ${ORCHESTRATOR_CPU_REQUEST}
@@ -61,3 +64,6 @@ spec:
         - name: google-credentials
           secret:
             secretName: ndvm-google-credentials
+        - name: account-data
+          configMap:
+            name: ndvm-account-data

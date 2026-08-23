@@ -78,6 +78,11 @@ Postgres password, and the desired embedding model. Keep
 `.application_default_credentials.json` untracked; deployment stores it only as the
 `ndvm-google-credentials` Kubernetes Secret.
 
+The synthetic TAM estates in `data/accounts/*.json` are copied during deployment into
+the `ndvm-account-data` ConfigMap and mounted read-only at `/app/data/accounts`. After
+editing those files, run `python3 gcp/gke.py sync-secrets` to update the ConfigMap and
+restart the orchestrator.
+
 ```bash
 cp .env.example .env
 export GCP_PROJECT_ID="your-project"
@@ -165,6 +170,13 @@ done
 
 echo "UI:  http://${INGRESS_ADDRESS}/"
 echo "API: http://${INGRESS_ADDRESS}/health"
+```
+
+`python3 gcp/gke.py deploy` prints the NDVM ingress URL once the rollout completes.
+To retrieve it later, or wait for a newly provisioned address:
+
+```bash
+python3 gcp/gke.py ingress --wait
 ```
 
 Open the printed **UI** URL in a browser. Confirm the API separately:

@@ -44,6 +44,7 @@ from scoring import rank_options
 from tools import RagSearchTool, RedHatCveSearchTool, lookup_vuln_finding
 
 _WAVE_TIMEOUT = float(_os.environ.get("NDVM_WAVE_TIMEOUT", "180"))
+_SYNTH_MAX_TOKENS = int(_os.environ.get("NDVM_SYNTH_MAX_TOKENS", "8192"))
 
 
 def _esc(s: str) -> str:
@@ -139,7 +140,7 @@ def _synth_agent(persona: str) -> Agent:
                 "raw fix_state / RHSA / VEX references included, ready to reuse across "
                 "similar cases."
             ),
-            llm=get_llm(fast=True), verbose=False,
+            llm=get_llm(fast=True, max_tokens=_SYNTH_MAX_TOKENS), verbose=False,
         )
     return Agent(
         role="Customer Mitigation Advisor",
@@ -149,7 +150,7 @@ def _synth_agent(persona: str) -> Agent:
             "viable options, the trade-offs, a clear recommended approach, and the proof "
             "behind it — so they can act today without fear."
         ),
-        llm=get_llm(fast=True), verbose=False,
+        llm=get_llm(fast=True, max_tokens=_SYNTH_MAX_TOKENS), verbose=False,
     )
 
 
@@ -457,7 +458,10 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
             "that is still effective for the constraint '{constraint}' (the options are "
             "re-ranked deterministically by a disruption-weighted score afterwards, so keep "
             "your explanation consistent with that preference and set recommended_title "
-            "accordingly). Leave 'playbook' null — NDVM generates the Ansible playbook "
+            "accordingly). Keep the complete JSON response under 3,000 tokens: environment_summary "
+            "at most 100 words; business_risk at most 120 words; explanation at most 160 words; "
+            "at most 3 options, each with a 35-word description, at most 3 short steps, and at "
+            "most 2 source URLs. Leave 'playbook' null — NDVM generates the Ansible playbook "
             "deterministically from the chosen option after you rank them."
         ),
         expected_output="A complete AdviceResult.",
@@ -532,7 +536,7 @@ class NDVMFlow(Flow[NDVMState]):
         acc = None
         if self.state.account:
             acc = load_account(self.state.account)
-        elif not self.state.forced_persona:
+        elif self.state.forced_persona != "primary":
             acc = detect_account(self.state.message)
             if acc:
                 self.state.intake.persona = "secondary"

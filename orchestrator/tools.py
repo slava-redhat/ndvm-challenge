@@ -8,7 +8,7 @@ from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
 from cve_parse import analyze_cve_json, search_params, slim_rows, valid_cve
-from db import rag_search_hybrid
+from db import rag_search_hybrid, search_cve_cache, upsert_cve_list_rows
 from models import VulnFinding
 
 SECDATA = "https://access.redhat.com/hydra/rest/securitydata/cve/{cve}.json"
@@ -97,10 +97,23 @@ class RedHatCveSearchTool(BaseTool):
             r.raise_for_status()
             rows = r.json()
         except (requests.RequestException, ValueError) as e:
-            return json.dumps({"error": f"search failed: {e}"})
+            try:
+                cached = search_cve_cache(package, product, severity, advisory, after)
+            except Exception:
+                return json.dumps({"error": f"search failed: {e}"})
+            if not cached:
+                return json.dumps({"error": f"search failed: {e}",
+                                   "note": "no local cve cache hit"})
+            return json.dumps({"results": cached,
+                               "note": "from local cve cache (API unreachable)"})
         if not rows:
             return json.dumps({"results": [], "note": "no matching CVEs"})
-        return json.dumps({"results": slim_rows(rows)})
+        slim = slim_rows(rows)
+        try:
+            upsert_cve_list_rows(slim)
+        except Exception:
+            pass  # ponytail: cache write is best-effort; never fail the search
+        return json.dumps({"results": slim})
 
 
 class RagInput(BaseModel):

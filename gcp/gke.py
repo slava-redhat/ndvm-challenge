@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -229,9 +230,23 @@ def sync_google_credentials(config: Config) -> None:
     kubectl(config, ["apply", "-f", "-"], input_text=credentials)
 
 
+def sync_account_data(config: Config) -> None:
+    accounts_dir = ROOT / "data" / "accounts"
+    account_files = sorted(accounts_dir.glob("*.json"))
+    if not account_files:
+        raise SystemExit(f"No account data files found in {accounts_dir}.")
+    account_data = command([
+        "kubectl", "-n", config.namespace, "create", "configmap", "ndvm-account-data",
+        *[f"--from-file={path.name}={path}" for path in account_files],
+        "--dry-run=client", "-o", "yaml",
+    ], capture=True)
+    kubectl(config, ["apply", "-f", "-"], input_text=account_data)
+
+
 def create_secret_and_schema(config: Config) -> None:
     sync_secret(config)
     sync_google_credentials(config)
+    sync_account_data(config)
     schema = command([
         "kubectl", "-n", config.namespace, "create", "configmap", "ndvm-postgres-init",
         f"--from-file=schema.sql={ROOT / 'db' / 'schema.sql'}",
@@ -247,6 +262,25 @@ def build_image(config: Config, service: str, tag: str) -> None:
         f"--substitutions=_TAG={config.registry}/{service}:{tag}",
         f"--project={config.project}", "--suppress-logs",
     ])
+
+
+def print_ingress_address(config: Config, wait: bool = False) -> None:
+    deadline = time.monotonic() + 300 if wait else 0
+    while True:
+        address = kubectl(
+            config,
+            ["get", "ingress", "ndvm", "-o",
+             "jsonpath={.status.loadBalancer.ingress[0].ip}{.status.loadBalancer.ingress[0].hostname}"],
+            capture=True,
+        ).strip()
+        if address:
+            print(f"NDVM is available at http://{address}/")
+            return
+        if not wait or time.monotonic() >= deadline:
+            print("Ingress address is pending. Run `python3 gcp/gke.py ingress --wait`.")
+            return
+        print("Waiting for ingress address...")
+        time.sleep(10)
 
 
 def deploy(config: Config, tag: str) -> None:
@@ -268,6 +302,7 @@ def deploy(config: Config, tag: str) -> None:
         if deployment == "orchestrator":
             kubectl(config, ["rollout", "restart", f"deployment/{deployment}"])
         kubectl(config, ["rollout", "status", f"deployment/{deployment}", "--timeout=180s"])
+    print_ingress_address(config)
 
 
 def sync_deployment_secrets(config: Config) -> None:
@@ -275,6 +310,7 @@ def sync_deployment_secrets(config: Config) -> None:
     cluster_credentials(config)
     sync_secret(config)
     sync_google_credentials(config)
+    sync_account_data(config)
     kubectl(config, ["rollout", "restart", "deployment/orchestrator"])
     kubectl(config, ["rollout", "status", "deployment/orchestrator", "--timeout=180s"])
 
@@ -304,6 +340,9 @@ def main() -> None:
     deploy_parser = subcommands.add_parser("deploy", help="Build images and deploy NDVM")
     deploy_parser.add_argument("--tag", default="latest")
     subcommands.add_parser("sync-secrets", help="Update Kubernetes secrets from .env")
+    ingress_parser = subcommands.add_parser("ingress", help="Print the NDVM ingress URL")
+    ingress_parser.add_argument("--wait", action="store_true",
+                                help="Wait up to five minutes for an ingress address")
     teardown_parser = subcommands.add_parser("teardown", help="Delete all NDVM GCP resources")
     teardown_parser.add_argument("--yes", action="store_true", help="Confirm destructive deletion")
     args = parser.parse_args()
@@ -314,6 +353,10 @@ def main() -> None:
         deploy(config, args.tag)
     elif args.action == "sync-secrets":
         sync_deployment_secrets(config)
+    elif args.action == "ingress":
+        require_tools("gcloud", "kubectl")
+        cluster_credentials(config)
+        print_ingress_address(config, args.wait)
     else:
         teardown(config, args.yes)
 

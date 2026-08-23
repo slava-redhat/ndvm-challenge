@@ -65,6 +65,53 @@ def slim_rows(rows: list) -> list:
     } for x in rows]
 
 
+def cache_fields_from_slim(row: dict) -> dict | None:
+    """Map a slim search hit to cve-table columns. Appends packages into summary so
+    offline package/product ILIKE works without a schema change (ponytail ceiling)."""
+    cve = (row.get("cve") or "").strip()
+    if not cve:
+        return None
+    summary = (row.get("summary") or "").strip()
+    pkgs = [p for p in (row.get("affected_packages") or []) if p]
+    if pkgs:
+        tag = "[" + ", ".join(pkgs) + "]"
+        summary = f"{summary} {tag}".strip() if summary else tag
+    cvss = None
+    try:
+        raw = row.get("cvss3")
+        cvss = float(raw) if raw is not None and raw != "" else None
+    except (TypeError, ValueError):
+        cvss = None
+    return {
+        "cve_id": cve.upper(),
+        "threat_severity": row.get("severity"),
+        "cvss3": cvss,
+        "summary": summary or None,
+        "source_url": row.get("url") or CVE_PAGE.format(cve=cve.upper()),
+    }
+
+
+def cache_search_filters(package: str = "", product: str = "", severity: str = "",
+                         advisory: str = "", after: str = ""):
+    """Build WHERE clauses for offline cve-table search, or None if uncacheable.
+
+    ponytail: no public_date/advisory columns — advisory or after-only need the API.
+    """
+    if (advisory or "").strip() or ((after or "").strip()
+                                    and not any((package, product, severity))):
+        return None
+    clauses, params = [], []
+    if (severity or "").strip():
+        clauses.append("LOWER(COALESCE(threat_severity, '')) = LOWER(%s)")
+        params.append(severity.strip())
+    text = " ".join(x.strip() for x in (package, product) if x and x.strip())
+    if text:
+        like = f"%{text}%"
+        clauses.append("(COALESCE(summary, '') ILIKE %s OR cve_id ILIKE %s)")
+        params.extend([like, like])
+    return (clauses, params) if clauses else None
+
+
 def _match(product_name: str, hint: str) -> bool:
     """True when hint is a substring of product_name, rejecting minor-version false
     hits (hint '... Linux 8' must not match '... Linux 8.6')."""

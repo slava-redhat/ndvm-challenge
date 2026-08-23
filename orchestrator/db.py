@@ -120,3 +120,47 @@ def save_recommendation(payload: dict) -> None:
             ),
         )
         c.commit()
+
+
+def upsert_cve_list_rows(slim: list[dict]) -> None:
+    """Cache successful /cve.json search hits into the cve table (best-effort)."""
+    from cve_parse import cache_fields_from_slim  # local: avoid import cycle at module load
+    rows = [f for r in slim if (f := cache_fields_from_slim(r))]
+    if not rows:
+        return
+    with _conn() as c, c.cursor() as cur:
+        for f in rows:
+            cur.execute(
+                "INSERT INTO cve (cve_id, threat_severity, cvss3, summary, source_url) "
+                "VALUES (%(cve_id)s, %(threat_severity)s, %(cvss3)s, %(summary)s, %(source_url)s) "
+                "ON CONFLICT (cve_id) DO UPDATE SET "
+                "threat_severity=EXCLUDED.threat_severity, cvss3=EXCLUDED.cvss3, "
+                "summary=EXCLUDED.summary, source_url=EXCLUDED.source_url, fetched_at=now()",
+                f,
+            )
+        c.commit()
+
+
+def search_cve_cache(package: str = "", product: str = "", severity: str = "",
+                     advisory: str = "", after: str = "", limit: int = 10) -> list[dict]:
+    """Best-effort offline /cve.json stand-in from previously cached cve rows."""
+    from cve_parse import cache_search_filters
+    built = cache_search_filters(package, product, severity, advisory, after)
+    if not built:
+        return []
+    clauses, params = built
+    sql = ("SELECT cve_id, threat_severity, cvss3, summary, source_url FROM cve "
+           f"WHERE {' AND '.join(clauses)} ORDER BY fetched_at DESC NULLS LAST LIMIT %s")
+    params = list(params) + [limit]
+    with _conn() as c, c.cursor() as cur:
+        cur.execute(sql, params)
+        return [{
+            "cve": cid,
+            "severity": sev,
+            "public_date": None,
+            "cvss3": str(cvss) if cvss is not None else None,
+            "advisories": [],
+            "affected_packages": [],
+            "summary": summary,
+            "url": url,
+        } for (cid, sev, cvss, summary, url) in cur.fetchall()]

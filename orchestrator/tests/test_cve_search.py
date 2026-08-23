@@ -1,5 +1,6 @@
 """Offline checks for the CVE search helpers (no network, no crewai)."""
-from cve_parse import search_params, slim_rows
+from cve_parse import (cache_fields_from_slim, cache_search_filters, search_params,
+                       slim_rows)
 
 
 def test_params_drops_empties_and_requires_one():
@@ -7,9 +8,10 @@ def test_params_drops_empties_and_requires_one():
     assert p == {"per_page": 10, "package": "openssl", "severity": "important"}, p
     try:
         search_params()  # no filters -> must raise
-        raise AssertionError("expected ValueError when no filter given")
     except ValueError:
         pass
+    else:
+        raise AssertionError("expected ValueError when no filter given")
 
 
 def test_slim_maps_fields_and_caps_packages():
@@ -25,7 +27,30 @@ def test_slim_maps_fields_and_caps_packages():
     assert slim["url"].endswith("cve.json")
 
 
+def test_cache_fields_folds_packages_into_summary():
+    fields = cache_fields_from_slim({
+        "cve": "cve-2023-3390", "severity": "Important", "cvss3": "7.8",
+        "summary": "nftables bypass", "affected_packages": ["kernel", "kernel-rt"],
+        "url": "https://access.redhat.com/security/cve/CVE-2023-3390",
+    })
+    assert fields["cve_id"] == "CVE-2023-3390"
+    assert fields["cvss3"] == 7.8
+    assert "kernel" in fields["summary"] and "nftables" in fields["summary"]
+    assert cache_fields_from_slim({"cve": "", "summary": "x"}) is None
+
+
+def test_cache_search_filters_offline_rules():
+    assert cache_search_filters(advisory="RHSA-2024:2394") is None
+    assert cache_search_filters(after="2024-01-01") is None  # after-only
+    clauses, params = cache_search_filters(package="kernel", severity="important")
+    assert "threat_severity" in clauses[0]
+    assert params[0] == "important"
+    assert "kernel" in params[1]
+
+
 if __name__ == "__main__":
     test_params_drops_empties_and_requires_one()
     test_slim_maps_fields_and_caps_packages()
+    test_cache_fields_folds_packages_into_summary()
+    test_cache_search_filters_offline_rules()
     print("ok")

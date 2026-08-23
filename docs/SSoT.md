@@ -323,7 +323,7 @@ User asks:
 | Source | Cache | TTL | Strategy |
 |--------|-------|-----|---|
 | Red Hat CVE (one) | lru_cache | 1024 entries / process lifetime | Per-CVE; 404 returns gracefully; network errors propagate |
-| Red Hat CVE list | None | — | Each search hits the API (could be db-cached; on roadmap) |
+| Red Hat CVE list | Postgres `cve` table | on successful search | Cache-aside: upsert slim hits after live `/cve.json`; on network failure, best-effort `SELECT` (severity + summary/cve_id ILIKE). Advisory/`after`-only filters need the API. |
 | CISA KEV | Frozenset, in-memory | 6h | TTL refresh; returns None (not False) on network error |
 | FIRST EPSS | Dict, in-memory | 6h per CVE | Per-CVE cache; (None, None) on unavailable |
 | SSVC (Table 9) | — | — | Pure local function; no cache/network |
@@ -341,10 +341,7 @@ Never fabricates priority. Tells the user the truth.
 
 ### Roadmap
 
-1. **DB caching for Red Hat CVE list**
-   - Cache `/cve.json` in `cve` table on first fetch
-   - Improves demo startup time; enables offline queries
-   - Estimated: +50 lines of code
+1. ~~**DB caching for Red Hat CVE list**~~ **Done** — cache-aside in `db.upsert_cve_list_rows` / `search_cve_cache`, wired from `RedHatCveSearchTool`.
 
 2. **Shared EPSS/KEV cache**
    - Move from in-process dict to Redis or Postgres
@@ -391,5 +388,5 @@ Never fabricates priority. Tells the user the truth.
 
 ---
 
-**Last updated:** 2026-08-21
+**Last updated:** 2026-08-23
 **Responsible teams:** NDVM core (feed integration) + Retrieval (RAG + indexing)
