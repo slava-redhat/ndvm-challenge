@@ -20,10 +20,17 @@ class Intake(BaseModel):
 
 
 class ClarifyQuestion(BaseModel):
-    """One LLM-generated, tick-box question the judge needs answered before advising."""
+    """One LLM-generated question the judge needs answered before advising.
+
+    options empty → UI shows a free-text field (package NEVRA, version, etc.).
+    options non-empty → tick-box / radio choices.
+    """
     key: str = Field(description="short stable id, e.g. 'maintenance_window'")
     question: str
-    options: List[str] = Field(description="2-5 concrete answer choices the user can tick")
+    options: List[str] = Field(
+        default_factory=list,
+        description="2-5 tick-box choices; leave empty for a free-text answer",
+    )
     multi: bool = True   # checkboxes: more than one answer may apply
 
 

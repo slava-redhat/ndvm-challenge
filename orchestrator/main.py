@@ -82,7 +82,8 @@ def _persist(result: dict) -> None:
 
 
 def _effective_force(req: AdviseReq) -> bool:
-    return bool(req.force or req.round >= MAX_GATE_ROUNDS)
+    # Match UI: round 1..MAX still allow the gate; only past the cap force-skip.
+    return bool(req.force or req.round > MAX_GATE_ROUNDS)
 
 
 @app.post("/advise")

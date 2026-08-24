@@ -34,14 +34,14 @@ except Exception:  # pragma: no cover - internal API, tolerate its absence
 
 from accounts import (account_view, default_cve, detect_account, estate_as_answers,
                       load_account)
-from cve_parse import filter_rag_hits_for_cve, prefer_mitigation_hits, valid_cve
+from cve_parse import filter_rag_hits_for_cve, find_cves, prefer_mitigation_hits, valid_cve
 from catalog import (catalog_context, filter_applicable_hits, materialize_options,
                      pin_options_to_catalog)
 from llm import get_llm
 import progress
 from playbook import build_playbook
-from models import (AdviceResult, ControlReport, CveChoice, ExploitSignal, Intake,
-                    Sufficiency, VulnFinding)
+from models import (AdviceResult, ClarifyQuestion, ControlReport, CveChoice, ExploitSignal,
+                    Intake, Sufficiency, VulnFinding)
 from priority import (adjust_tier, apply_ssvc_context, assess, build_decision_package,
                       classify, compliance_note, compliance_signal, priority_note)
 from scoring import rank_options
@@ -233,6 +233,28 @@ def _gate_agent() -> Agent:
 
 
 def run_gate(message: str, intake: Intake, answers: str = "") -> Sufficiency:
+    # Multi-CVE messages: force a radio pick before any LLM gate (one advice run = one CVE).
+    named = find_cves(message)
+    if len(named) > 1:
+        # Match CVE only in answer values (after ':'), not in question prose.
+        answer_vals = " ".join(
+            line.split(":", 1)[-1]
+            for line in (answers or "").splitlines() if ":" in line
+        ).upper()
+        picked = next((c for c in named if c in answer_vals), "")
+        if not picked:
+            return Sufficiency(
+                sufficient=False,
+                missing=["cve"],
+                questions=[ClarifyQuestion(
+                    key="which_cve",
+                    question="You named more than one CVE — which should we analyze first?",
+                    options=named,
+                    multi=False,
+                )],
+            )
+        intake.cve = picked
+
     agent = _gate_agent()
     task = Task(
         description=(
@@ -249,11 +271,16 @@ def run_gate(message: str, intake: Intake, answers: str = "") -> Sufficiency:
             "place (SELinux, firewall, network segmentation, FIPS, IdM), whether backups/DR "
             "exist, and the real maintenance window? If key pieces are missing, you are NOT "
             "sufficient.\n"
-            "If NOT sufficient: set sufficient=false and generate up to 5 crisp questions, "
-            "each with 2-5 concrete tick-box options tailored to THIS case (never generic "
-            "filler). Only ask what would change the recommendation, and do not re-ask "
-            "anything already answered above. Never ask to verify/correct the CVE id when "
-            "it is already well-formed (CVE-YYYY-NNNN).\n"
+            "If NOT sufficient: set sufficient=false and generate up to 5 crisp questions.\n"
+            "Question shapes:\n"
+            "- Closed facts (exposure, controls, window): 2-5 concrete tick-box options, "
+            "multi=true/false as appropriate.\n"
+            "- Open facts the user must TYPE (exact package name, NEVRA, kernel/rpm version, "
+            "host name): leave options=[] so the UI shows a free-text field. Never ask them "
+            "to 'specify' something with only tick boxes and no text box.\n"
+            "Only ask what would change the recommendation, and do not re-ask anything "
+            "already answered above. Never ask to verify/correct the CVE id when it is "
+            "already well-formed (CVE-YYYY-NNNN).\n"
             "If the picture is clear enough, set sufficient=true and leave questions empty."
         ),
         expected_output="A Sufficiency object.",

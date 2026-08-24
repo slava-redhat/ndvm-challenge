@@ -1,5 +1,5 @@
 """Self-check for the trust-critical CVE parser. Run: python -m pytest (or this file)."""
-from cve_parse import analyze_cve_json, ndvm_applies_for, search_params, valid_cve
+from cve_parse import analyze_cve_json, find_cves, ndvm_applies_for, search_params, valid_cve
 
 # Fix deferred for the customer's product -> NDVM applies (the David scenario).
 DEFERRED = {
@@ -73,6 +73,8 @@ def test_input_guardrails():
     # CVE id validation (trust boundary before any HTTP fetch)
     assert valid_cve("CVE-2023-3390") and valid_cve("cve-2024-12345")
     assert not valid_cve("old openssh") and not valid_cve("") and not valid_cve("CVE-23-1")
+    assert find_cves("see CVE-2023-3390 and CVE-2024-6387, plus CVE-2023-3390 again") == [
+        "CVE-2023-3390", "CVE-2024-6387"]
     # search filters: good inputs pass, malformed ones raise instead of firing a request
     assert search_params(package="kernel", severity="Important")["severity"] == "important"
     # cvss3: null must not crash

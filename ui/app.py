@@ -624,19 +624,23 @@ def render_advice(intake, advice, account=None):
 ss = st.session_state
 pending = ss.get("pending")  # {questions, orig_msg, persona, answers, round}
 
-# Phase 2 — the sufficiency judge asked for more; collect tick-box answers.
+# Phase 2 — the sufficiency judge asked for more; collect answers.
 if pending:
     st.info("A few quick questions so the advice fits **your** environment — I won't guess. "
-            "Tick what applies, then submit.")
+            "Answer what applies, then submit.")
     if pending.get("missing"):
         st.caption("Still unclear: " + " · ".join(pending["missing"]))
     with st.form("clarify"):
         picks = {}
         for i, q in enumerate(pending["questions"]):
             label = q["question"]
-            opts = q.get("options", []) or []
+            opts = [o for o in (q.get("options") or []) if str(o).strip()]
             key = f"q_{i}_{q.get('key','')}"
-            if q.get("multi", True):
+            if not opts:
+                typed = st.text_input(label, key=key,
+                                      placeholder="Type the exact value (e.g. kernel-4.18.0-477.el8)")
+                picks[label] = [typed.strip()] if typed and typed.strip() else []
+            elif q.get("multi", True):
                 picks[label] = st.multiselect(label, opts, key=key)
             else:
                 picks[label] = [v] if (v := st.radio(label, opts, key=key)) else []
@@ -645,7 +649,12 @@ if pending:
         new = "\n".join(f"{lbl}: {', '.join(v) if v else '(no answer)'}"
                         for lbl, v in picks.items())
         merged = (pending["answers"] + "\n" + new).strip()
-        rnd = pending["round"] + 1
+        # CVE disambiguation is not a sufficiency round — keep budget for real gate Qs.
+        only_cve_pick = (
+            len(pending["questions"]) == 1
+            and (pending["questions"][0].get("key") or "") == "which_cve"
+        )
+        rnd = pending["round"] if only_cve_pick else pending["round"] + 1
         force = rnd > MAX_ROUNDS  # ran out of rounds: advise with what we have
         data = run_with_progress(pending["orig_msg"], pending["persona"], merged, force,
                                  pending.get("account", ""), round=rnd)

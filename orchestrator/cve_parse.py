@@ -23,6 +23,17 @@ def valid_cve(cve: str) -> bool:
     return bool(CVE_RE.match((cve or "").strip()))
 
 
+def find_cves(text: str) -> list[str]:
+    """Unique CVE ids in text, in order of first appearance (uppercased)."""
+    seen, out = set(), []
+    for m in CVE_FIND_RE.finditer(text or ""):
+        c = m.group(0).upper()
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
 def filter_rag_hits_for_cve(hits: list, cve: str) -> list:
     """Keep only RAG chunks that do not cite a *different* CVE than the pinned one.
 
