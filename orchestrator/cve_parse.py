@@ -43,6 +43,15 @@ def filter_rag_hits_for_cve(hits: list, cve: str) -> list:
     return kept
 
 
+def prefer_mitigation_hits(hits: list) -> list:
+    """Allow-list options: keep only curated doc_type=mitigation chunks.
+
+    PDFs alone must not drive NDVM options — thin PDF similarity is guessing.
+    """
+    return [h for h in (hits or [])
+            if (h.get("metadata") or {}).get("doc_type") == "mitigation"]
+
+
 def ndvm_applies_for(fix_state: str) -> bool:
     """NDVM applies unless Red Hat says the product isn't affected. A fix that shipped
     but can't be applied yet (reboot/change window blocked) STILL needs interim

@@ -58,7 +58,7 @@ the UI tags each source by **provenance tier** (Red Hat authoritative → curate
 | service | role |
 |---|---|
 | `db` | Postgres + pgvector — vectors **and** relational facts/audit (one DB) |
-| `ingest` | one-shot: mitigation catalog + PDFs + seed CVEs → pgvector |
+| `ingest` | one-shot: mitigation YAML catalog + PDFs → pgvector (not CVE pages) |
 | `orchestrator` | FastAPI + CrewAI flow (`POST /advise`, `GET /triage`, `GET /accounts`) |
 | `ui` | Streamlit chat + ranked option cards + TAM estate/triage board |
 
@@ -208,7 +208,14 @@ local pgvector database into the target cluster.
 Ingest is **incremental**: each source (yaml/pdf basename) is recorded in
 the `ingested_source` ledger with a content hash, so `make ingest` only embeds what's
 new or changed (`make sources` shows the ledger).
-- Mitigations: drop a `data/mitigations/<platform>.yaml`, `make ingest`.
+- Mitigations: drop a `data/mitigations/<platform>.yaml`, `make ingest`. Grow the
+  allow-list via YAML — not by embedding CVE pages. Option synthesis searches
+  `doc_type=mitigation` only and fails closed when nothing curated applies.
+  Each YAML row has a stable `id`; Python returns only those catalog records
+  (LLM may rank/explain, never invent options or URLs). Applicability uses
+  `components` / `exclude_components` / `fix_states` / `requires`.
+  PDF chunks are secondary evidence for the **validator** (existing-control prose),
+  not for inventing new options.
 - Hardening docs: **drop PDFs in `data/pdfs/`**, `make ingest`.
 - CVE **facts** are not ingested — runtime reads Red Hat Security Data live (and may
   cache `/cve.json` search hits in table `cve`). Do not embed CVE blurbs into RAG.
@@ -220,8 +227,8 @@ catches exact tokens like CVE ids / `kpatch` / `NetworkPolicy` that embeddings b
 No new dependency — the FTS is a generated `tsvector` column in the same DB. The curated
 mitigation catalog gets a small relevance-gated prior. Measure it against a golden set:
 ```bash
-cd orchestrator && PYTHONPATH=. python tests/eval_retrieval.py --mode both --k 6
-# recall@6 and MRR for dense vs hybrid
+cd orchestrator && PYTHONPATH=. python tests/eval_retrieval.py --mode catalog --k 6
+# curated allow-list recall; also --mode both for dense vs hybrid
 ```
 
 ## Tests

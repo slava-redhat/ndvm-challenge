@@ -68,7 +68,7 @@ CURATED_BOOST = 1.0 / (RRF_K + 1)
 
 
 def rag_search_hybrid(query: str, platform: str | None = None, k: int = 6,
-                      pool: int = 20) -> list[dict]:
+                      pool: int = 20, doc_types: tuple[str, ...] | None = None) -> list[dict]:
     """Dense (pgvector) + lexical (Postgres FTS), fused with Reciprocal Rank Fusion.
 
     Dense catches paraphrase; FTS catches exact identifiers (CVE ids, kpatch,
@@ -76,13 +76,17 @@ def rag_search_hybrid(query: str, platform: str | None = None, k: int = 6,
     calibration between cosine distance and ts_rank is needed. Same platform filter
     as the dense path (personalization). No new dependency — all in the DB we run.
 
-    Mitigation retrieval excludes doc_type=cve: short CVE blurbs look alike to dense
-    search and caused wrong-CVE 'similar' hits. CVE facts belong in table cve / live API.
+    By default skips doc_type=cve. Pass doc_types=('mitigation',) for allow-list-only
+    option retrieval so PDF haystack cannot drown the curated catalog.
     """
     qvec = _vec_literal(embed(query, task="search_query"))
-    # Always skip ingested CVE summary chunks — they are not mitigation guidance.
-    clauses = ["COALESCE(metadata->>'doc_type', '') <> 'cve'"]
+    clauses: list[str] = []
     params: list = []
+    if doc_types:
+        clauses.append("metadata->>'doc_type' = ANY(%s)")
+        params.append(list(doc_types))
+    else:
+        clauses.append("COALESCE(metadata->>'doc_type', '') <> 'cve'")
     if platform and platform != "other":
         clauses.append("metadata->>'platform' IN (%s, 'any')")
         params.append(platform)
@@ -94,12 +98,12 @@ def rag_search_hybrid(query: str, platform: str | None = None, k: int = 6,
         cur.execute(f"SELECT id FROM doc_chunk{where} "
                     f"ORDER BY embedding <=> %s::vector LIMIT %s", params + [qvec, pool])
         dense = [r[0] for r in cur.fetchall()]
-        # lexical: one plainto_tsquery via CTE; empty query (all stopwords) -> no rows
+        # lexical: plainto placeholder comes *before* WHERE params in the SQL text
         cur.execute(
             f"WITH q AS (SELECT plainto_tsquery('english', %s) AS tsq) "
             f"SELECT id FROM doc_chunk{where} AND tsv @@ (SELECT tsq FROM q) "
             f"ORDER BY ts_rank_cd(tsv, (SELECT tsq FROM q)) DESC LIMIT %s",
-            params + [query, pool])
+            [query, *params, pool])
         lexical = [r[0] for r in cur.fetchall()]
         scores: dict = {}
         for ranked in (dense, lexical):

@@ -23,7 +23,7 @@ down: ## Stop the stack (keeps the data volume)
 logs: ## Tail all service logs
 	$(DC) logs -f
 
-ingest: ## Incremental ingest: only new/changed PDFs, YAMLs, CVEs get embedded
+ingest: ## Incremental ingest: only new/changed PDFs / mitigation YAMLs get embedded
 	$(DC) up -d db
 	$(DC) build ingest
 	$(DC) run --rm ingest

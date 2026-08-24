@@ -111,6 +111,9 @@ def load_mitigations(cur):
         cur.execute("DELETE FROM mitigation WHERE platform=%s", (platform,))
         rows = []
         for m in doc.get("mitigations") or []:
+            cid = (m.get("id") or "").strip()
+            if not cid:
+                raise ValueError(f"{src}: mitigation missing stable id: {m.get('title')}")
             cur.execute(
                 "INSERT INTO mitigation (platform, title, action_type, description, "
                 "disruption, effectiveness, effort, applies_when, source_url) "
@@ -119,14 +122,29 @@ def load_mitigations(cur):
                  m["disruption"], m["effectiveness"], m["effort"],
                  m.get("applies_when"), m.get("source_url")),
             )
-            text = (f"{m['title']}. {m['description']} "
+            text = (f"[{cid}] {m['title']}. {m['description']} "
                     f"Applies when: {m.get('applies_when') or ''}")
             rows.append((text, m))
         vecs = embed_batch([t for t, _ in rows], task="search_document")
         for (text, m), emb in zip(rows, vecs):
+            cid = m["id"].strip()
             add_chunk(cur, text, m.get("source_url", ""), platform, "mitigation", src,
                       embedding=emb,
-                      extra_meta={"action_type": m.get("action_type"), "title": m.get("title")})
+                      extra_meta={
+                          "catalog_id": cid,
+                          "action_type": m.get("action_type"),
+                          "title": m.get("title"),
+                          "description": m.get("description"),
+                          "disruption": m.get("disruption"),
+                          "effectiveness": m.get("effectiveness"),
+                          "effort": m.get("effort"),
+                          "components": m.get("components") or [],
+                          "exclude_components": m.get("exclude_components") or [],
+                          "fix_states": m.get("fix_states") or [],
+                          "requires": m.get("requires") or [],
+                          "scope": m.get("scope") or "",
+                          "steps": m.get("steps") or [],
+                      })
         mark(cur, src, "mitigation", digest, len(rows))
         print(f"mitigation loaded: {src} ({len(rows)})")
 

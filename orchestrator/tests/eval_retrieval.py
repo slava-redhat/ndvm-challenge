@@ -1,13 +1,13 @@
 """Golden-set retrieval eval: does the RAG return the RIGHT mitigation chunk?
 
-The actionable mitigations are ~10 needles in a ~3.6k-chunk PDF haystack, so a query
-that pulls generic hardening prose instead of the precise option is a silent quality
-loss. This measures it: recall@k (is the expected source in the top k?) and MRR
-(1/rank of the first hit). Run before/after a retrieval change to see the number move.
+Curated YAML options are needles in a large PDF haystack. Production option synthesis
+searches doc_type=mitigation only (`--mode catalog`). Measure recall@k / MRR before
+and after catalog or retrieval changes.
 
     # inside the orchestrator container (has DB + Ollama embeddings):
     python tests/eval_retrieval.py            # dense (current rag_search)
     python tests/eval_retrieval.py --mode hybrid   # dense + Postgres FTS, RRF-fused
+    python tests/eval_retrieval.py --mode catalog  # mitigation allow-list only
     python tests/eval_retrieval.py --k 6 --mode both
 """
 import argparse
@@ -19,25 +19,29 @@ from db import rag_search
 # Mix of paraphrase (dense should handle) and bare identifiers (lexical/hybrid should win).
 GOLD = [
     ("patch a kernel flaw without rebooting the server", "rhel", "solutions/2206511"),
-    ("keep an exploit contained at the service level with mandatory access control", "rhel", "using_selinux"),
-    ("remove network reachability to the vulnerable port", "rhel", "configuring_firewalls"),
+    ("keep an exploit contained at the service level with mandatory access control", "rhel", "solutions/7032454"),
+    ("remove network reachability to the vulnerable port", "rhel", "solutions/962473"),
     ("the optional module carrying the bug is not used, switch it off", "rhel", "disable the vulnerable module"),
     ("Red Hat signed data says our version is not affected, what do we record", "rhel", "csaf/v2/vex"),
-    ("stop other pods from reaching the vulnerable workload", "openshift", "network-security"),
-    ("prevent a bad container image from being admitted to the cluster", "openshift", "security_and_compliance"),
-    ("reduce the privileges a pod is allowed to run with", "openshift", "managing-pod-security-policies"),
+    ("stop other pods from reaching the vulnerable workload", "openshift", "solutions/3660771"),
+    ("prevent a bad container image from being admitted to the cluster", "openshift", "advanced-cluster-security"),
+    ("reduce the privileges a pod is allowed to run with", "openshift", "solutions/5243301"),
     # bare identifiers — dense embeddings tend to bury these under prose:
     ("kpatch", "rhel", "solutions/2206511"),
-    ("NetworkPolicy", "openshift", "network-security"),
-    ("SELinux enforcing confinement", "rhel", "using_selinux"),
+    ("NetworkPolicy", "openshift", "solutions/3660771"),
+    ("SELinux enforcing confinement", "rhel", "solutions/7032454"),
     ("VEX known_not_affected", "rhel", "csaf/v2/vex"),
+    # catalog depth / unknown path: curated hit vs thin query that should miss catalog
+    ("openssh MaxStartups sshd_config", "rhel", "solutions/54099"),
+    ("EgressNetworkPolicy AdminNetworkPolicy restrict outbound", "openshift", "solutions/7092810"),
 ]
 
 
 def _search(query, platform, k, mode):
-    if mode == "hybrid":
+    if mode in ("hybrid", "catalog"):
         from db import rag_search_hybrid
-        return rag_search_hybrid(query, platform, k)
+        kwargs = {"doc_types": ("mitigation",)} if mode == "catalog" else {}
+        return rag_search_hybrid(query, platform, k, **kwargs)
     return rag_search(query, platform, k)
 
 
@@ -70,7 +74,7 @@ def evaluate(mode: str, k: int, verbose: bool = True) -> dict:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["dense", "hybrid", "both"], default="dense")
+    ap.add_argument("--mode", choices=["dense", "hybrid", "catalog", "both"], default="dense")
     ap.add_argument("--k", type=int, default=6)
     args = ap.parse_args()
     modes = ["dense", "hybrid"] if args.mode == "both" else [args.mode]

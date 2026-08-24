@@ -1,17 +1,31 @@
 # RHEL non-disruptive mitigation menu. Data-driven: add entries, re-run ingest.
+# Each row needs a stable `id` (catalog_id in RAG metadata). Options are only
+# these records — the LLM may rank/explain, never invent new ones.
+# source_url MUST be access.redhat.com and HTTP 200.
+# components / exclude_components / fix_states / requires / scope gate applicability.
+# Each row MUST set either non-empty `components` or `scope: generic` (compensating).
 platform: rhel
 mitigations:
-  - title: Apply a kernel live patch (kpatch)
+  - id: rhel_kpatch
+    title: Apply a kernel live patch (kpatch)
     action_type: livepatch
     description: >
       Use Red Hat kernel live patching to close a kernel CVE without a reboot,
-      where a live patch is available for the affected kernel.
+      where a live patch is available for the affected kernel. On RHEL 8/9 use
+      dnf: dnf install kpatch kpatch-dnf; kpatch-dnf install-patch; kpatch list.
     disruption: none
     effectiveness: 3
     effort: 2
-    applies_when: kernel CVE, no reboot possible, live patch published
+    applies_when: kernel CVE, no reboot possible, live patch published, kpatch
+    components: [kernel]
+    requires: [livepatch]
+    steps:
+      - dnf install kpatch kpatch-dnf
+      - kpatch-dnf install-patch
+      - kpatch list
     source_url: https://access.redhat.com/solutions/2206511
-  - title: Tighten SELinux confinement
+  - id: rhel_selinux
+    title: Tighten SELinux confinement
     action_type: selinux
     description: >
       Keep SELinux enforcing and confine the affected service so an exploit is
@@ -19,9 +33,11 @@ mitigations:
     disruption: low
     effectiveness: 3
     effort: 2
-    applies_when: service-level CVE, SELinux available
-    source_url: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/using_selinux/
-  - title: Restrict exposure with firewalld
+    applies_when: service-level CVE, SELinux available, confinement
+    scope: generic
+    source_url: https://access.redhat.com/solutions/7032454
+  - id: rhel_firewalld
+    title: Restrict exposure with firewalld
     action_type: network
     description: >
       Block or scope network access to the vulnerable port/service via firewalld
@@ -29,9 +45,24 @@ mitigations:
     disruption: low
     effectiveness: 3
     effort: 1
-    applies_when: network-reachable CVE
-    source_url: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/configuring_firewalls_and_packet_filters/
-  - title: Disable the vulnerable module or feature
+    applies_when: network-reachable CVE, firewalld, network-facing
+    scope: generic
+    source_url: https://access.redhat.com/solutions/962473
+  - id: rhel_nftables
+    title: Restrict exposure with nftables
+    action_type: network
+    description: >
+      Drop or limit traffic to the vulnerable service with nftables rules when
+      firewalld is not the active backend, removing remote reachability without
+      a package upgrade.
+    disruption: low
+    effectiveness: 3
+    effort: 2
+    applies_when: network-reachable CVE, nftables, network-facing
+    scope: generic
+    source_url: https://access.redhat.com/solutions/7049833
+  - id: rhel_disable_module
+    title: Disable the vulnerable module or feature
     action_type: disable
     description: >
       Turn off the specific module/feature that carries the flaw if it is not in
@@ -39,9 +70,152 @@ mitigations:
     disruption: medium
     effectiveness: 4
     effort: 2
-    applies_when: optional module/feature not required
-    source_url: https://access.redhat.com/security
-  - title: Confirm "not affected" via Red Hat VEX
+    applies_when: optional module/feature not required, disable
+    components: [kernel]
+    source_url: https://access.redhat.com/solutions/41278
+  - id: rhel_blacklist_module
+    title: Unload or blacklist a vulnerable kernel module
+    action_type: disable
+    description: >
+      If the CVE is confined to a loadable kernel module that is not required,
+      unload it and blacklist it so the vulnerable code is not present until the
+      next maintenance reboot for a full kernel update.
+    disruption: medium
+    effectiveness: 4
+    effort: 2
+    applies_when: kernel module CVE, optional driver, blacklist, kernel
+    components: [kernel]
+    source_url: https://access.redhat.com/solutions/6978452
+  - id: rhel_openssh_harden
+    title: Harden OpenSSH daemon settings
+    action_type: config
+    description: >
+      Tighten sshd_config (for example MaxStartups and LoginGraceTime) to reduce
+      exploitability of SSH connection-flood or race-class flaws without replacing
+      openssh packages mid-freeze.
+    disruption: low
+    effectiveness: 3
+    effort: 2
+    applies_when: openssh, sshd, regreSSHion, network-facing SSH
+    components: [openssh]
+    steps:
+      - Review MaxStartups in sshd_config (see linked solution)
+      - Apply the tuned MaxStartups value
+      - systemctl reload sshd
+    source_url: https://access.redhat.com/solutions/54099
+  - id: rhel_openssl_isolate
+    title: Isolate OpenSSL or crypto-using services
+    action_type: network
+    description: >
+      Limit which hosts can reach services that embed a vulnerable OpenSSL/crypto
+      stack (TLS listeners, VPN gateways) so remote exploit paths are cut while a
+      rebuild is scheduled.
+    disruption: low
+    effectiveness: 3
+    effort: 2
+    applies_when: openssl, crypto, TLS service, network-facing
+    components: [openssl]
+    source_url: https://access.redhat.com/solutions/7049833
+  - id: rhel_systemd_harden
+    title: Contain a vulnerable userspace service with systemd hardening
+    action_type: config
+    description: >
+      Apply systemd unit hardening (ProtectSystem, NoNewPrivileges, PrivateTmp,
+      restricted Capabilities) to the affected service so a compromise is
+      confined without an immediate package reboot cycle.
+    disruption: low
+    effectiveness: 3
+    effort: 2
+    applies_when: userspace service CVE, systemd, daemon
+    scope: generic
+    exclude_components: [kernel]
+    source_url: https://access.redhat.com/solutions/7032454
+  - id: rhel_service_restart
+    title: Restart only the affected service after a userspace fix lands
+    action_type: config
+    description: >
+      When a non-kernel fix is available but a full host reboot is blocked, apply
+      the update with dnf and restart only the affected service so exposure drops
+      without a maintenance window.
+    disruption: low
+    effectiveness: 4
+    effort: 2
+    applies_when: userspace package Fixed, service restart OK, no full reboot
+    scope: generic
+    exclude_components: [kernel]
+    fix_states: [Fixed, Affected]
+    source_url: https://access.redhat.com/security/vulnerabilities/
+  - id: rhel_container_runtime
+    title: Confine container runtime exposure on the host
+    action_type: config
+    description: >
+      Restrict who can talk to the container runtime API / socket and drop
+      unnecessary privileges for runc/crun workloads so a runtime CVE cannot be
+      reached from untrusted tenants until the runtime is patched.
+    disruption: low
+    effectiveness: 3
+    effort: 3
+    applies_when: runc, crun, container runtime, host socket
+    components: [runc]
+    source_url: https://access.redhat.com/solutions/41278
+  - id: rhel_insights_remediation
+    title: Apply an Insights / Ansible remediation playbook
+    action_type: compensating
+    description: >
+      If Red Hat Insights publishes a remediation playbook for this CVE, run it
+      via Ansible Automation to apply the vendor-recommended interim controls
+      consistently across the fleet without ad-hoc SSH changes.
+    disruption: low
+    effectiveness: 3
+    effort: 2
+    applies_when: Insights remediation available, Ansible, fleet scale
+    scope: generic
+    source_url: https://access.redhat.com/products/red-hat-insights/
+  - id: rhel_http_surface
+    title: Reduce web-server / HTTP attack surface
+    action_type: config
+    description: >
+      For httpd, nginx, or HTTP/2 front ends, disable unused modules/protocols
+      and tighten TLS listener binding so a protocol-level CVE is not reachable
+      from the internet.
+    disruption: low
+    effectiveness: 3
+    effort: 2
+    applies_when: httpd, nginx, HTTP/2, web tier, network-facing
+    components: [httpd]
+    source_url: https://access.redhat.com/solutions/962473
+  - id: rhel_quarantine
+    title: Quarantine affected hosts on a restricted VLAN / zone
+    action_type: network
+    description: >
+      Move or mark affected systems into a restricted network zone so only
+      management and essential peers can reach them until the change window.
+    disruption: medium
+    effectiveness: 3
+    effort: 3
+    applies_when: network-facing estate, segmentation, quarantine
+    scope: generic
+    steps:
+      - Place the host interface in a restrictive firewalld zone (drop/internal)
+      - Allow only management and essential peer traffic into that zone
+      - Verify the vulnerable service is unreachable from untrusted networks
+    # English firewalld zones chapter (5904961 is a non-English translation stub).
+    source_url: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/securing_networks/using-and-configuring-firewalld_securing-networks#working-with-firewalld-zones_using-and-configuring-firewalld
+  - id: rhel_crypto_policy
+    title: Enforce FIPS or crypto-policy to limit weak algorithms
+    action_type: config
+    description: >
+      Where the CVE involves weak cryptography or protocol downgrade, raise the
+      system-wide crypto policy / FIPS mode so vulnerable algorithms are refused
+      without rewriting application code.
+    disruption: medium
+    effectiveness: 3
+    effort: 3
+    applies_when: crypto, TLS algorithms, FIPS, crypto-policies
+    components: [openssl]
+    source_url: https://access.redhat.com/security/vulnerabilities/
+  - id: rhel_vex_not_affected
+    title: Confirm "not affected" via Red Hat VEX
     action_type: verify
     description: >
       If Red Hat's signed VEX marks your product/version known_not_affected, the
@@ -50,4 +224,6 @@ mitigations:
     effectiveness: 4
     effort: 1
     applies_when: VEX status known_not_affected
+    fix_states: ["Not affected"]
+    scope: generic
     source_url: https://access.redhat.com/security/data/csaf/v2/vex/

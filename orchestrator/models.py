@@ -84,6 +84,7 @@ class ControlReport(BaseModel):
 
 
 class MitigationOption(BaseModel):
+    catalog_id: str = ""                 # stable YAML id; empty = not from catalog (dropped)
     title: str
     action_type: str
     description: str

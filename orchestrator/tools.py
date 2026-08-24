@@ -133,7 +133,7 @@ class RagSearchTool(BaseTool):
 
     def _run(self, query: str, platform: str = "") -> str:
         try:
-            hits = rag_search_hybrid(query, platform or None)
+            hits = rag_search_hybrid(query, platform or None, doc_types=("mitigation",))
         except Exception as e:
             # ponytail: Ollama/DB down → empty grounded list, don't kill the wave
             return f"Knowledge base unavailable ({type(e).__name__}: {e}). No grounded mitigations."

@@ -34,7 +34,9 @@ except Exception:  # pragma: no cover - internal API, tolerate its absence
 
 from accounts import (account_view, default_cve, detect_account, estate_as_answers,
                       load_account)
-from cve_parse import filter_rag_hits_for_cve, valid_cve
+from cve_parse import filter_rag_hits_for_cve, prefer_mitigation_hits, valid_cve
+from catalog import (catalog_context, filter_applicable_hits, materialize_options,
+                     pin_options_to_catalog)
 from llm import get_llm
 import progress
 from playbook import build_playbook
@@ -300,7 +302,9 @@ def _kick(agent: Agent, task: Task, inputs: dict):
 
 
 def _audit_trail(intake: Intake, persona: str, researched: bool, sig: dict,
-                 result: AdviceResult, controls_n: int, timings: tuple) -> list[dict]:
+                 result: AdviceResult, controls_n: int, timings: tuple,
+                 rag_sources: list[str] | None = None,
+                 pdf_sources: list[str] | None = None) -> list[dict]:
     """The visible trust story: the ordered chain that produced this answer, each step
     tagged with its BASIS (Red Hat data / Python feed / deterministic / LLM) and its
     sources — so 'trusted' is inspectable, not asserted. Assembled from data already on
@@ -308,6 +312,12 @@ def _audit_trail(intake: Intake, persona: str, researched: bool, sig: dict,
     _t0, _tA, _tB, _tC = timings
     v = result.vulnerability
     opt_sources = sorted({s for o in result.options for s in (o.source_urls or [])})
+    catalog_sources = list(dict.fromkeys(
+        [u for u in (rag_sources or []) if u] or opt_sources))
+    pdf_urls = list(dict.fromkeys(u for u in (pdf_sources or []) if u))
+    # Catalog options first, then PDF evidence — both visible in the audit.
+    retrieve_sources = list(dict.fromkeys(
+        (opt_sources or catalog_sources) + pdf_urls))
     epss = f" · EPSS {sig['epss']:.0%}" if sig.get("epss") is not None else ""
     trail = [{"step": "Route & scope the request", "basis": "LLM (router)",
               "detail": f"Classified as {persona} · platform {intake.platform} · "
@@ -330,14 +340,16 @@ def _audit_trail(intake: Intake, persona: str, researched: bool, sig: dict,
                     + (f" · {sig['ssvc_rationale']}" if sig.get("ssvc_rationale") else "")),
          "sources": [u for u in sig.get("source_urls", []) if "ssvc" in u.lower()]},
         {"step": "Retrieve grounded mitigations", "basis": "Hybrid RAG (pgvector + FTS)",
-         "detail": f"{len(result.options)} sourced option(s) from the trusted knowledge base",
-         "sources": opt_sources, "ms": int((_tA - _t0) * 1000)},
-        {"step": "Validate controls you already run", "basis": "LLM · only stated controls",
+         "detail": (f"{len(result.options)} catalog option(s)"
+                    + (f" · {len(pdf_urls)} PDF evidence hit(s) for control checks"
+                       if pdf_urls else " · no PDF evidence hits")),
+         "sources": retrieve_sources, "ms": int((_tA - _t0) * 1000)},
+        {"step": "Validate controls you already run", "basis": "LLM · stated controls + PDF evidence",
          "detail": f"{controls_n} existing control(s) assessed against this CVE",
-         "sources": [], "ms": int((_tB - _tA) * 1000)},
+         "sources": pdf_urls, "ms": int((_tB - _tA) * 1000)},
         {"step": "Rank options & pick the recommendation", "basis": "Python · deterministic score",
          "detail": f"ordered by disruption/effectiveness/effort for the constraint → "
-                   f"recommended “{result.recommended_title}”", "sources": []},
+                   f"recommended “{result.recommended_title}”", "sources": opt_sources},
         {"step": "Decision package (residual risk)", "basis": "Python · SSVC + urgency + option",
          "detail": (f"{result.residual_before} → {result.residual_after}"
                     + (f" · {result.decision_summary}" if result.decision_summary else "")),
@@ -357,20 +369,13 @@ def _is_vex_option(o) -> bool:
 
 def _rag_context(hits: list[dict]) -> str:
     return "\n\n".join(
-        f"[source: {hit['source_url']}] {hit['text']}" for hit in hits
+        f"[catalog_id: {(hit.get('metadata') or {}).get('catalog_id') or '—'} | "
+        f"source: {hit['source_url']}] {hit['text']}" for hit in hits
     )
 
 
 def _knowledge_base_unavailable(message: str) -> dict:
     return {"knowledge_base_unavailable": True, "message": message}
-
-
-def _bind_retrieved_sources(options, sources: set[str]) -> None:
-    """Replace model-written links with citations the RAG query actually returned."""
-    verified = sorted(sources)
-    for option in options:
-        matching = [url for url in option.source_urls if url in sources]
-        option.source_urls = (matching or verified)[:2]
 
 
 def run_advice(intake: Intake, persona: str, answers: str = "",
@@ -395,13 +400,19 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
             "answers": _esc(answers or "none"),
             "priority_note": _esc(priority_note(sig))}
 
-    # ---- Wave A: pin VulnFinding in Python (trust spine) ‖ deterministic RAG retrieve
+    # ---- Wave A: pin VulnFinding ‖ catalog options ‖ PDF evidence for validator
     progress.emit("Grounding the CVE in Red Hat data + retrieving mitigations")
     _t0 = time.time()
     progress.check_cancel()
-    with ThreadPoolExecutor(max_workers=2) as ex:
+    with ThreadPoolExecutor(max_workers=3) as ex:
         fp = ex.submit(lookup_vuln_finding, intake.cve, intake.product)
-        fr = ex.submit(rag_search_hybrid, f"{intake.cve} {intake.constraint}", intake.platform)
+        fr = ex.submit(rag_search_hybrid, f"{intake.cve} {intake.constraint}",
+                       intake.platform, 6, 20, ("mitigation",))
+        # ponytail: PDF is secondary prose for validator only — never option synthesis
+        fpdf = ex.submit(
+            rag_search_hybrid,
+            f"{intake.constraint} {answers or ''} hardening controls".strip(),
+            intake.platform, 4, 12, ("pdf",))
         pinned: VulnFinding = fp.result(timeout=_WAVE_TIMEOUT)
         try:
             rag_hits = fr.result(timeout=_WAVE_TIMEOUT)
@@ -411,35 +422,51 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
                 "The RAG knowledge base may be offline. Check the vector database "
                 "restore and Ollama embedding service, then retry."
             )
-    rag_hits = filter_rag_hits_for_cve(rag_hits, intake.cve)
-    if not rag_hits:
+        try:
+            pdf_hits = fpdf.result(timeout=_WAVE_TIMEOUT)
+        except Exception:
+            pdf_hits = []  # ponytail: PDF optional; catalog is the fail-closed gate
+    rag_hits = prefer_mitigation_hits(filter_rag_hits_for_cve(rag_hits, intake.cve))
+    pdf_hits = filter_rag_hits_for_cve(pdf_hits, intake.cve)
+    rag_hits = filter_applicable_hits(
+        rag_hits, pinned, intake.product or "", intake.platform or "")
+    catalog_options = materialize_options(rag_hits)
+    if not catalog_options:
         return _knowledge_base_unavailable(
-            f"No verified mitigation guidance for {intake.cve} is in the trusted knowledge "
-            "base (refusing to reuse other CVEs' pages as substitutes). Ingest relevant "
-            "mitigations/docs for this CVE, or name a CVE that is already in the corpus."
+            f"No curated mitigation option for {intake.cve} applies given Red Hat "
+            "fix_state/component signals (refusing to invent fixes from PDF similarity). "
+            "Add or retag an entry under data/mitigations/ and re-run ingest."
         )
     _tA = time.time()
     analyst_finding = pinned.model_dump_json()
     retrieved = _rag_context(rag_hits)
-    trusted_sources = {hit["source_url"] for hit in rag_hits if hit.get("source_url")}
+    catalog_list = catalog_context(catalog_options)
+    pdf_evidence = _rag_context(pdf_hits) if pdf_hits else "(no PDF evidence retrieved)"
     a = _analysis_agents()
     synth = _synth_agent(persona)
 
     # ---- Wave B: validator + strategist (injected values escaped for interpolate_only)
     progress.check_cancel()
     ctx = {**base, "analyst_finding": _esc(analyst_finding),
-           "retrieved_candidates": _esc(retrieved)}
+           "retrieved_candidates": _esc(retrieved),
+           "catalog_allow_list": _esc(catalog_list),
+           "pdf_evidence": _esc(pdf_evidence)}
     validate = Task(
         description=(
             "From the customer's answers, list the security controls they ALREADY have in "
             "place:\n---\n{answers}\n---\n"
             "Authoritative Python-pinned CVE finding for '{cve}':\n---\n{analyst_finding}\n---\n"
-            "Retrieved Red Hat guidance:\n---\n{retrieved_candidates}\n---\n"
+            "Curated mitigation catalog (context only — do NOT invent new options here):\n"
+            "---\n{retrieved_candidates}\n---\n"
+            "Secondary PDF hardening evidence (cite these ONLY when assessing the customer's "
+            "existing controls; never invent a new mitigation option from PDFs alone):\n"
+            "---\n{pdf_evidence}\n---\n"
             "Assess EACH existing control against this CVE's attack vector and fix_state: "
             "status is 'mitigated' (fully blocks this exploit path), 'partial' (reduces "
             "exposure but is not a full fix), 'not_mitigated', or 'unknown'. Give a one-line "
-            "rationale and cite a source. Do NOT assess controls the customer did not mention "
-            "and never invent controls. If they mention none, return an empty list."
+            "rationale and cite a source from the PDF evidence or catalog when relevant. "
+            "Do NOT assess controls the customer did not mention and never invent controls. "
+            "If they mention none, return an empty list."
         ),
         expected_output="A ControlReport: each existing control with status, rationale, source_urls.",
         agent=a["validator"],
@@ -448,18 +475,14 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
     strategize = Task(
         description=(
             "Authoritative CVE finding:\n---\n{analyst_finding}\n---\n"
-            "Retrieved candidate mitigations:\n---\n{retrieved_candidates}\n---\n"
-            "Rank these candidates by disruption, effectiveness and effort for the "
-            "constraint '{constraint}', weighing the customer's specific answers:\n"
-            "---\n{answers}\n---\n"
-            "Exploitation urgency for this CVE: {priority_note} "
-            "If it is known-exploited, high-EPSS, or SSVC Act/Attend, favour the option that "
-            "cuts exposure FASTEST even at slightly higher effort. "
-            "e.g. if they have no maintenance window soon, penalise anything needing a "
-            "reboot; if the host is internet-facing, favour options that cut exposure now. "
-            "Pick the recommended option and justify why the others rank lower FOR THIS case."
+            "ALLOW-LIST of catalog options (rank ONLY these catalog_id values; never invent):\n"
+            "---\n{catalog_allow_list}\n---\n"
+            "Rank by disruption, effectiveness and effort for constraint '{constraint}', "
+            "weighing answers:\n---\n{answers}\n---\n"
+            "Exploitation urgency: {priority_note}. "
+            "Output the ordered catalog_id list and a short rationale. Do not invent options."
         ),
-        expected_output="A ranked shortlist with a recommended option and rationale.",
+        expected_output="Ordered catalog_id shortlist with rationale.",
         agent=a["strategist"],
     )
     progress.emit("Checking controls you already run + ranking options")
@@ -504,13 +527,16 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
             "urgency established above. If SSVC says Act under a freeze, say the business "
             "must apply a non-disruptive interim now — not wait for a reboot window. Leave "
             "'residual_before', 'residual_after', and 'decision_summary' empty — Python fills "
-            "those Decision Package labels after ranking. Fill "
-            "options from this ranking:\n---\n{strategy}\n---\n"
-            "each with disruption, effectiveness (1-4), effort (1-4) and source_urls. Do NOT "
-            "invent or normalize source URLs: copy each option's source_urls exactly from "
-            "the retrieved candidate guidance above. "
-            "include a 'confirm/verify not affected (VEX)' option, and do not mention VEX in "
-            "the explanation, UNLESS the authoritative finding's fix_state is exactly "
+            "those Decision Package labels after ranking. "
+            "ALLOW-LIST of catalog options (you may ONLY emit these catalog_id values):\n"
+            "---\n{catalog_allow_list}\n---\n"
+            "Strategist ranking:\n---\n{strategy}\n---\n"
+            "Fill 'options' as a subset of that allow-list (at most 3). Each option MUST "
+            "include catalog_id exactly as listed. Copy title, action_type, disruption, "
+            "effectiveness, effort, and source_urls from the allow-list — never invent a "
+            "new option or a new URL. You may only add up to 3 short steps paraphrasing "
+            "the catalog description. "
+            "Do not include a VEX/not-affected option unless fix_state is exactly "
             "'Not affected'. Write a "
             "clear explanation of the trade-offs that favours the LEAST DISRUPTIVE option "
             "that is still effective for the constraint '{constraint}' (the options are "
@@ -533,9 +559,9 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
           f"waveB(validator‖strategist)={_tB-_tA:.1f}s waveC(synth)={_tC-_tB:.1f}s "
           f"crew_total={_tC-_t0:.1f}s", flush=True)
 
-    # Trust spine: always overwrite LLM vulnerability with Python-pinned Red Hat facts.
+    # Trust spine: pin CVE facts + replace LLM options with exact catalog records.
     result.vulnerability = pinned
-    _bind_retrieved_sources(result.options, trusted_sources)
+    result.options = pin_options_to_catalog(result.options, catalog_options, max_n=3)
     sig["tier"], sig["rationale"] = classify(sig.get("kev", sig["in_kev"]), sig["epss"],
                                              pinned.threat_severity)
     csig = compliance_signal(compliance or [])
@@ -571,8 +597,11 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
     result.residual_after = pkg["residual_after"]
     result.decision_summary = pkg["decision_summary"]
     d = result.model_dump()
-    d["audit"] = _audit_trail(intake, persona, researched, sig, result,
-                              len(control_report.controls), (_t0, _tA, _tB, _tC))
+    d["audit"] = _audit_trail(
+        intake, persona, researched, sig, result,
+        len(control_report.controls), (_t0, _tA, _tB, _tC),
+        rag_sources=[u for o in catalog_options for u in (o.source_urls or [])],
+        pdf_sources=[h["source_url"] for h in pdf_hits if h.get("source_url")])
     return d
 
 

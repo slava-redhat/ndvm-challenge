@@ -17,7 +17,8 @@ SSVC_BADGE = {"act": ("🔴", "Act"), "attend": ("🟠", "Attend"),
 # P4 — provenance: label each source by trust tier so David sees WHY to trust a fact.
 # Pure domain match (no model), highest-trust first wins.
 SOURCE_TIERS = [
-    (("access.redhat.com", "bugzilla.redhat.com"), "🛡️", "Red Hat official"),
+    (("access.redhat.com", "bugzilla.redhat.com", "docs.redhat.com", "docs.openshift.com"),
+     "🛡️", "Red Hat official"),
     (("cisa.gov",), "🚨", "CISA (US gov)"),
     (("first.org",), "📊", "FIRST EPSS"),
     (("nvd.nist.gov", "cve.org", "cve.mitre.org", "mitre.org"), "🏛️", "NVD / MITRE"),
