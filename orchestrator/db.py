@@ -75,12 +75,18 @@ def rag_search_hybrid(query: str, platform: str | None = None, k: int = 6,
     NetworkPolicy) that embeddings bury under prose. RRF fuses by RANK, so no score
     calibration between cosine distance and ts_rank is needed. Same platform filter
     as the dense path (personalization). No new dependency — all in the DB we run.
+
+    Mitigation retrieval excludes doc_type=cve: short CVE blurbs look alike to dense
+    search and caused wrong-CVE 'similar' hits. CVE facts belong in table cve / live API.
     """
     qvec = _vec_literal(embed(query, task="search_query"))
-    where, params = "", []
+    # Always skip ingested CVE summary chunks — they are not mitigation guidance.
+    clauses = ["COALESCE(metadata->>'doc_type', '') <> 'cve'"]
+    params: list = []
     if platform and platform != "other":
-        where = " WHERE metadata->>'platform' IN (%s, 'any')"
-        params = [platform]
+        clauses.append("metadata->>'platform' IN (%s, 'any')")
+        params.append(platform)
+    where = " WHERE " + " AND ".join(clauses)
     with _conn() as c, c.cursor() as cur:
         if platform and platform != "other":
             # See rag_search: exact scan preserves recall for filtered HNSW queries.
@@ -89,10 +95,9 @@ def rag_search_hybrid(query: str, platform: str | None = None, k: int = 6,
                     f"ORDER BY embedding <=> %s::vector LIMIT %s", params + [qvec, pool])
         dense = [r[0] for r in cur.fetchall()]
         # lexical: one plainto_tsquery via CTE; empty query (all stopwords) -> no rows
-        lex_where = (where + " AND" if where else " WHERE")
         cur.execute(
             f"WITH q AS (SELECT plainto_tsquery('english', %s) AS tsq) "
-            f"SELECT id FROM doc_chunk{lex_where} tsv @@ (SELECT tsq FROM q) "
+            f"SELECT id FROM doc_chunk{where} AND tsv @@ (SELECT tsq FROM q) "
             f"ORDER BY ts_rank_cd(tsv, (SELECT tsq FROM q)) DESC LIMIT %s",
             params + [query, pool])
         lexical = [r[0] for r in cur.fetchall()]

@@ -204,13 +204,14 @@ the orchestrator, and the UI using the untracked ADC credential file stored as a
 Kubernetes Secret; `make vector-db-backup` and `make vector-db-restore` clone the
 local pgvector database into the target cluster.
 
-## Adding platforms / mitigations / CVEs / docs
-Ingest is **incremental**: each source (yaml/pdf basename or CVE id) is recorded in
+## Adding platforms / mitigations / docs
+Ingest is **incremental**: each source (yaml/pdf basename) is recorded in
 the `ingested_source` ledger with a content hash, so `make ingest` only embeds what's
 new or changed (`make sources` shows the ledger).
 - Mitigations: drop a `data/mitigations/<platform>.yaml`, `make ingest`.
 - Hardening docs: **drop PDFs in `data/pdfs/`**, `make ingest`.
-- CVEs: edit `INGEST_CVES` in `.env`, `make ingest`.
+- CVE **facts** are not ingested — runtime reads Red Hat Security Data live (and may
+  cache `/cve.json` search hits in table `cve`). Do not embed CVE blurbs into RAG.
 
 ## Retrieval — dense + lexical hybrid
 `mitigation_rag_search` fuses two rankings with **Reciprocal Rank Fusion (RRF)**: dense

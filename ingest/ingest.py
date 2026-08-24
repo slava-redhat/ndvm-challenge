@@ -1,9 +1,13 @@
-"""Incremental ingest: mitigation catalog + hardening PDFs + seed CVEs -> pgvector.
+"""Incremental ingest: mitigation catalog + hardening PDFs -> pgvector.
 
-Idempotent by content hash: each source (yaml/pdf basename or CVE id) is recorded
-in `ingested_source` with a sha256. Unchanged sources are skipped (no re-embed);
+Idempotent by content hash: each source (yaml/pdf basename) is recorded in
+`ingested_source` with a sha256. Unchanged sources are skipped (no re-embed);
 changed ones have their old chunks dropped and re-loaded. `INGEST_RESET=1` wipes
 the corpus first (full rebuild). Drop hardening PDFs in data/pdfs/ then re-run.
+
+CVE facts are NOT ingested here — runtime uses the live Red Hat Security Data API
+(and optional /cve.json search-cache into table `cve`). Embedding CVE blurbs into
+RAG caused dense search to return similar wrong-CVE pages as "mitigations".
 """
 import glob
 import hashlib
@@ -11,7 +15,6 @@ import json
 import os
 
 import psycopg
-import requests
 import yaml
 from pypdf import PdfReader
 
@@ -33,14 +36,6 @@ PDF_SOURCES = {
     for product, _title, _version, _guide, _guide_title in GUIDES
     for url, filename in [build_pdf_url(product, _title, _version, _guide, _guide_title)]
 }
-SECDATA = "https://access.redhat.com/hydra/rest/securitydata/cve/{cve}.json"
-SEED_CVES = os.environ.get(
-    "INGEST_CVES",
-    # Demo-account CVEs + common RH-tracked cases (kernel, sshd, log4j, container runtime…)
-    "CVE-2024-3094,CVE-2023-3390,CVE-2024-1086,CVE-2024-6387,CVE-2023-44487,"
-    "CVE-2021-44228,CVE-2022-0847,CVE-2021-4034,CVE-2023-4911,CVE-2023-38545,"
-    "CVE-2024-21626,CVE-2019-5736,CVE-2022-0492,CVE-2022-42889,CVE-2024-2961",
-).split(",")
 
 
 def conn():
@@ -51,41 +46,29 @@ def conn():
     )
 
 
-def vec(v: list[float]) -> str:
-    return "[" + ",".join(f"{x:.6f}" for x in v) + "]"
-
-
 def sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
-# ponytail: ledger table also lives in db/schema.sql (fresh installs); this
-# CREATE IF NOT EXISTS keeps already-provisioned pgdata volumes working too.
 def ensure_schema(cur):
-    cur.execute(
-        "CREATE TABLE IF NOT EXISTS ingested_source ("
-        " source TEXT PRIMARY KEY, kind TEXT NOT NULL, sha256 TEXT NOT NULL,"
-        " chunks INT NOT NULL DEFAULT 0, ingested_at TIMESTAMPTZ DEFAULT now())"
-    )
-    # Lexical half of hybrid retrieval (see db.rag_search_hybrid). Idempotent so
-    # already-provisioned pgdata volumes gain the column without a full re-init.
-    cur.execute("ALTER TABLE doc_chunk ADD COLUMN IF NOT EXISTS tsv tsvector "
-                "GENERATED ALWAYS AS (to_tsvector('english', text)) STORED")
-    cur.execute("CREATE INDEX IF NOT EXISTS doc_chunk_tsv_idx ON doc_chunk USING GIN (tsv)")
+    cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ingested_source (
+            source TEXT PRIMARY KEY, kind TEXT NOT NULL, sha256 TEXT NOT NULL,
+            chunks INT NOT NULL DEFAULT 0, ingested_at TIMESTAMPTZ DEFAULT now())""")
 
 
 def seen(cur, source, digest) -> bool:
     cur.execute("SELECT sha256 FROM ingested_source WHERE source=%s", (source,))
     row = cur.fetchone()
-    return bool(row) and row[0] == digest
+    return bool(row and row[0] == digest)
 
 
 def mark(cur, source, kind, digest, chunks):
     cur.execute(
-        "INSERT INTO ingested_source (source, kind, sha256, chunks, ingested_at) "
-        "VALUES (%s,%s,%s,%s, now()) ON CONFLICT (source) DO UPDATE SET "
-        "kind=EXCLUDED.kind, sha256=EXCLUDED.sha256, chunks=EXCLUDED.chunks, "
-        "ingested_at=now()",
+        "INSERT INTO ingested_source (source, kind, sha256, chunks) VALUES (%s,%s,%s,%s) "
+        "ON CONFLICT (source) DO UPDATE SET kind=EXCLUDED.kind, sha256=EXCLUDED.sha256, "
+        "chunks=EXCLUDED.chunks, ingested_at=now()",
         (source, kind, digest, chunks),
     )
 
@@ -95,16 +78,25 @@ def drop_chunks(cur, source):
 
 
 def add_chunk(cur, text, source_url, platform, doc_type, source, embedding=None,
-              extra_meta: dict | None = None):
+              extra_meta=None):
     meta = {"platform": platform, "doc_type": doc_type, "source": source}
     if extra_meta:
         meta.update(extra_meta)
     emb = embedding if embedding is not None else embed(text, task="search_document")
     cur.execute(
         "INSERT INTO doc_chunk (text, source_url, metadata, embedding) "
-        "VALUES (%s, %s, %s::jsonb, %s::vector)",
-        (text, source_url, json.dumps(meta), vec(emb)),
+        "VALUES (%s,%s,%s::jsonb,%s::vector)",
+        (text, source_url, json.dumps(meta), "[" + ",".join(f"{x:.6f}" for x in emb) + "]"),
     )
+
+
+def chunk(text, size=1200, overlap=150):
+    """ponytail: fixed windows; upgrade to sentence-aware splitter if recall dips."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        out.append(text[i:i + size])
+        i += max(1, size - overlap)
+    return out
 
 
 def load_mitigations(cur):
@@ -114,37 +106,34 @@ def load_mitigations(cur):
         if seen(cur, src, digest):
             print(f"unchanged: {src}"); continue
         doc = yaml.safe_load(raw)
-        platform = doc["platform"]
+        platform = doc.get("platform") or "any"
         drop_chunks(cur, src)
-        # Structured scores live in doc_chunk.metadata (runtime RAG); skip write-only
-        # mitigation table — Makefile stats count mitigation chunks instead.
+        cur.execute("DELETE FROM mitigation WHERE platform=%s", (platform,))
         rows = []
-        for m in doc["mitigations"]:
-            text = f"{m['title']} ({m['action_type']}, disruption={m['disruption']}). " \
-                   f"{m['description']} Applies when: {m.get('applies_when','')}"
+        for m in doc.get("mitigations") or []:
+            cur.execute(
+                "INSERT INTO mitigation (platform, title, action_type, description, "
+                "disruption, effectiveness, effort, applies_when, source_url) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (platform, m["title"], m["action_type"], m["description"],
+                 m["disruption"], m["effectiveness"], m["effort"],
+                 m.get("applies_when"), m.get("source_url")),
+            )
+            text = (f"{m['title']}. {m['description']} "
+                    f"Applies when: {m.get('applies_when') or ''}")
             rows.append((text, m))
         vecs = embed_batch([t for t, _ in rows], task="search_document")
         for (text, m), emb in zip(rows, vecs):
             add_chunk(cur, text, m.get("source_url", ""), platform, "mitigation", src,
                       embedding=emb,
-                      extra_meta={"title": m["title"], "action_type": m["action_type"],
-                                  "disruption": m["disruption"],
-                                  "effectiveness": m["effectiveness"],
-                                  "effort": m["effort"]})
+                      extra_meta={"action_type": m.get("action_type"), "title": m.get("title")})
         mark(cur, src, "mitigation", digest, len(rows))
-        print(f"mitigations loaded: {src} ({len(rows)})")
-
-
-def chunk(text: str, size: int = 800, overlap: int = 100):
-    text = " ".join(text.split())
-    i = 0
-    while i < len(text):
-        yield text[i:i + size]
-        i += size - overlap
+        print(f"mitigation loaded: {src} ({len(rows)})")
 
 
 def load_pdfs(cur):
-    # PDFs outside the current curated guide list may remain from an earlier corpus.
+    # Older ingestions stored only local filenames and a generic platform. Updating
+    # metadata does not alter vectors, so unchanged PDFs do not need re-embedding.
     # They must not leak into platform-specific RAG retrieval as generic "any" content.
     cur.execute(
         "UPDATE doc_chunk SET metadata = jsonb_set(metadata, '{platform}', '\"other\"'::jsonb) "
@@ -154,8 +143,6 @@ def load_pdfs(cur):
         raw = open(path, "rb").read()
         src, digest = os.path.basename(path), sha(raw)
         source_url, platform = PDF_SOURCES.get(src, (src, "any"))
-        # Older ingestions stored only local filenames and a generic platform. Updating
-        # metadata does not alter vectors, so unchanged PDFs do not need re-embedding.
         cur.execute(
             "UPDATE doc_chunk SET source_url = %s, "
             "metadata = jsonb_set(metadata, '{platform}', to_jsonb(%s::text)) "
@@ -178,54 +165,6 @@ def load_pdfs(cur):
         print(f"pdf loaded: {src} ({len(texts)} chunks)")
 
 
-def load_cves(cur):
-    for cve in [c.strip() for c in SEED_CVES if c.strip()]:
-        try:
-            r = requests.get(SECDATA.format(cve=cve),
-                             params={"isCompressed": "false"}, timeout=30)
-            if r.status_code != 200:
-                print(f"skip {cve}: HTTP {r.status_code}"); continue
-            digest = sha(r.content)
-            data = r.json()
-        except Exception as e:
-            print(f"skip {cve}: {e}"); continue
-        if seen(cur, cve, digest):
-            print(f"unchanged: {cve}"); continue
-        sev = data.get("threat_severity", "unknown")
-        try:
-            raw = (data.get("cvss3") or {}).get("cvss3_base_score")
-            cvss = float(raw) if raw is not None else None
-        except (TypeError, ValueError):
-            cvss = None
-        summary = (data.get("bugzilla", {}) or {}).get("description") or \
-                  " ".join(data.get("details", []) or [])[:500]
-        url = f"https://access.redhat.com/security/cve/{cve}"
-        drop_chunks(cur, cve)
-        cur.execute("DELETE FROM cve_product_state WHERE cve_id=%s", (cve,))
-        cur.execute(
-            "INSERT INTO cve (cve_id, threat_severity, cvss3, summary, source_url) "
-            "VALUES (%s,%s,%s,%s,%s) ON CONFLICT (cve_id) DO UPDATE SET "
-            "threat_severity=EXCLUDED.threat_severity, cvss3=EXCLUDED.cvss3, "
-            "summary=EXCLUDED.summary, fetched_at=now()",
-            (cve, sev, cvss, summary, url),
-        )
-        for st in data.get("package_state", []) or []:
-            cur.execute(
-                "INSERT INTO cve_product_state (cve_id, product_name, fix_state) "
-                "VALUES (%s,%s,%s)",
-                (cve, st.get("product_name"), st.get("fix_state")),
-            )
-        for rel in data.get("affected_release", []) or []:
-            cur.execute(
-                "INSERT INTO cve_product_state (cve_id, product_name, fix_state, rhsa, fixed_nvra) "
-                "VALUES (%s,%s,'Fixed',%s,%s)",
-                (cve, rel.get("product_name"), rel.get("advisory"), rel.get("package")),
-            )
-        add_chunk(cur, f"{cve} ({sev}). {summary}", url, "any", "cve", cve)
-        mark(cur, cve, "cve", digest, 1)
-        print(f"cve loaded: {cve} ({sev})")
-
-
 def main():
     ensure_model()
     with conn() as c, c.cursor() as cur:
@@ -234,9 +173,11 @@ def main():
             cur.execute("TRUNCATE doc_chunk, mitigation, cve_product_state, cve, "
                         "ingested_source RESTART IDENTITY CASCADE")
             print("reset: corpus cleared")
+        # One-shot cleanup: older builds embedded CVE blurbs into RAG; drop them.
+        cur.execute("DELETE FROM doc_chunk WHERE metadata->>'doc_type' = 'cve'")
+        cur.execute("DELETE FROM ingested_source WHERE kind = 'cve'")
         load_mitigations(cur)
         load_pdfs(cur)
-        load_cves(cur)
         c.commit()
     print("ingest complete")
 

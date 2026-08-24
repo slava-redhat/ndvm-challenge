@@ -153,12 +153,29 @@ CREATE TABLE doc_chunk (
    - Tagged by doc_type = "mitigation"
 
 2. **PDF knowledge base** (`data/pdfs/*.pdf`)
-   - Red Hat docs, CISA guidance, best practices
-   - Ingested on first launch, stored in DB
+   - Curated Red Hat `docs.redhat.com` PDFs downloaded by `ingest/fetch_pdfs.py`
+   - Canonical URL and platform metadata (`rhel`, `openshift`, `other`) are stored
+     with each chunk; unchanged content is not re-embedded
 
-3. **Programmatically generated controls**
-   - SELinux policies, firewall rules, compliance controls
-   - Added dynamically via `account_cves()` lookups
+Current corpus inventory and database operations are maintained in
+[`DB.md`](DB.md).
+
+### 2.3 Curated PDF coverage (2026-08-23)
+
+`fetch_pdfs.py` currently defines 39 verified Red Hat PDFs:
+
+| Coverage | Guides |
+|---|---:|
+| RHEL 9 / RHEL 8 | 12 / 8 |
+| OpenShift 4.18 / 4.16 / 4.15 | 5 / 2 / 1 |
+| ACS 4.6 | 4 |
+| Insights / Satellite 6.16 | 2 / 2 |
+| AAP 2.5 / Ceph 7 / OpenStack 16.2 | 1 / 1 / 1 |
+
+This is curated RHEL/OpenShift security guidance, not complete Red Hat platform
+coverage. Scale by adding verified guide tuples to `GUIDES`, then running
+`make ingest`; prioritize current releases plus OpenShift Virtualization, ROSA,
+OpenShift AI, Quay, Developer Hub, JBoss EAP, and AMQ.
 
 **Embedding:** 
 ```python
@@ -195,6 +212,8 @@ embed(text: str, task: str) -> list[float]
    WHERE metadata->>'platform' IN (?, 'any')  -- platform personalization
    ORDER BY embedding <=> qvec::vector LIMIT pool
    # Top 20 by cosine distance
+   # Platform-filtered dense retrieval uses an exact scan; HNSW filters after
+   # candidate selection and can otherwise return no matching RHEL/OpenShift rows.
 
 2. LEXICAL SEARCH
    SELECT id FROM doc_chunk
@@ -281,6 +300,8 @@ User asks:
 
 ↓ Synthesizer writes: explanation, playbook, business-risk summary
   All facts tagged by source tier: 🛡️ 🚨 📊 🏛️
+  Mitigation citations are bound to URLs returned by RAG; the model cannot introduce
+  alternate or invented links.
 
 ↓ Output: AdviceResult
   {

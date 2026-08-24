@@ -9,6 +9,8 @@ run_advice fans work out: [pin ‖ retrieve] -> [validator ‖ strategist] -> sy
 Mechanical agents run on the fast LLM tier.
 """
 import os as _os
+import re
+from datetime import date
 
 # Must be set BEFORE crewai is imported. Kills two container-hostile behaviours that
 # dominated request latency: (1) the OTEL telemetry exporter, which blocks with exponential
@@ -32,7 +34,7 @@ except Exception:  # pragma: no cover - internal API, tolerate its absence
 
 from accounts import (account_view, default_cve, detect_account, estate_as_answers,
                       load_account)
-from cve_parse import valid_cve
+from cve_parse import filter_rag_hits_for_cve, valid_cve
 from llm import get_llm
 import progress
 from playbook import build_playbook
@@ -46,6 +48,35 @@ from tools import RedHatCveSearchTool, lookup_vuln_finding
 
 _WAVE_TIMEOUT = float(_os.environ.get("NDVM_WAVE_TIMEOUT", "180"))
 _SYNTH_MAX_TOKENS = int(_os.environ.get("NDVM_SYNTH_MAX_TOKENS", "8192"))
+# Gate/router models are trained with older cutoffs and invent "2026 is future" questions.
+_CVE_YEAR_DOUBT = re.compile(
+    r"(future\s+year|verify.{0,40}cve|correct\s+cve\s+ident|cve\s+number\s+shows|"
+    r"cve.{0,20}(look|seem|appear).{0,20}(wrong|invalid|future))",
+    re.I,
+)
+
+
+def _calendar_year() -> int:
+    return date.today().year
+
+
+def _cve_year_context() -> str:
+    y = _calendar_year()
+    return (f"Calendar year today is {y}. CVE-{y}-NNNN (and earlier years) are valid "
+            f"current-year ids — not 'future'. Do NOT ask the user to verify or correct a "
+            f"well-formed CVE id solely because the year is {y} or recent.")
+
+
+def _drop_cve_year_doubt_questions(gate: Sufficiency, cve: str) -> Sufficiency:
+    """Python guardrail: never stall the gate on training-cutoff CVE-year confusion."""
+    if not valid_cve(cve) or not gate.questions:
+        return gate
+    kept = [q for q in gate.questions if not _CVE_YEAR_DOUBT.search(q.question or "")]
+    if len(kept) == len(gate.questions):
+        return gate
+    if not kept:
+        return Sufficiency(sufficient=True, missing=gate.missing, questions=[])
+    return gate.model_copy(update={"questions": kept})
 
 
 def _esc(s: str) -> str:
@@ -159,7 +190,8 @@ def run_router(message: str, forced_persona: str = "") -> Intake:
             "IT Leader); 'secondary' = Red Hat Support or a TAM. Extract platform "
             "(rhel|openshift|other), product (e.g. 'Red Hat Enterprise Linux 8'), version, "
             "cve (e.g. CVE-2023-3390), and the hard constraint that blocks patching. "
-            "If a forced persona is provided ('{forced_persona}'), use it as the persona."
+            "If a forced persona is provided ('{forced_persona}'), use it as the persona. "
+            "{cve_year_context}"
         ),
         expected_output="An Intake object.",
         agent=agent,
@@ -167,7 +199,8 @@ def run_router(message: str, forced_persona: str = "") -> Intake:
     )
     crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=False)
     out = crew.kickoff(inputs={"message": _esc(message),
-                               "forced_persona": forced_persona or "none"})
+                               "forced_persona": forced_persona or "none",
+                               "cve_year_context": _cve_year_context()})
     intake: Intake = _require_pydantic(out, "router")
     if forced_persona in ("primary", "secondary"):
         intake.persona = forced_persona
@@ -208,6 +241,7 @@ def run_gate(message: str, intake: Intake, answers: str = "") -> Sufficiency:
             "Structured so far: platform={platform}, product='{product}', version='{version}', "
             "cve='{cve}', constraint='{constraint}'.\n"
             "Answers already gathered from earlier questions (may say 'none'):\n---\n{answers}\n---\n"
+            "{cve_year_context}\n"
             "Judge like a TAM: do you know where/how the vuln was detected, the exact "
             "affected component+version, the exposure, the security controls already in "
             "place (SELinux, firewall, network segmentation, FIPS, IdM), whether backups/DR "
@@ -216,7 +250,8 @@ def run_gate(message: str, intake: Intake, answers: str = "") -> Sufficiency:
             "If NOT sufficient: set sufficient=false and generate up to 5 crisp questions, "
             "each with 2-5 concrete tick-box options tailored to THIS case (never generic "
             "filler). Only ask what would change the recommendation, and do not re-ask "
-            "anything already answered above.\n"
+            "anything already answered above. Never ask to verify/correct the CVE id when "
+            "it is already well-formed (CVE-YYYY-NNNN).\n"
             "If the picture is clear enough, set sufficient=true and leave questions empty."
         ),
         expected_output="A Sufficiency object.",
@@ -226,12 +261,13 @@ def run_gate(message: str, intake: Intake, answers: str = "") -> Sufficiency:
     crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=False)
     dump = {k: _esc(str(v)) if isinstance(v, str) else v for k, v in intake.model_dump().items()}
     out = crew.kickoff(inputs={**dump, "message": _esc(message),
-                               "answers": _esc(answers or "none")})
+                               "answers": _esc(answers or "none"),
+                               "cve_year_context": _cve_year_context()})
     gate: Sufficiency = _require_pydantic(out, "gate")
     # Empty question list with insufficient=true stuck UX — treat as sufficient.
     if not gate.sufficient and not gate.questions:
         return Sufficiency(sufficient=True, missing=gate.missing, questions=[])
-    return gate
+    return _drop_cve_year_doubt_questions(gate, intake.cve)
 
 
 # ---- Advice crew (shared analysis + persona synthesizer) ---------------------
@@ -375,11 +411,12 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
                 "The RAG knowledge base may be offline. Check the vector database "
                 "restore and Ollama embedding service, then retry."
             )
+    rag_hits = filter_rag_hits_for_cve(rag_hits, intake.cve)
     if not rag_hits:
         return _knowledge_base_unavailable(
-            "No verified mitigation guidance is available. The RAG knowledge base is "
-            "offline or empty. Check the vector database restore and Ollama embedding "
-            "service, then retry."
+            f"No verified mitigation guidance for {intake.cve} is in the trusted knowledge "
+            "base (refusing to reuse other CVEs' pages as substitutes). Ingest relevant "
+            "mitigations/docs for this CVE, or name a CVE that is already in the corpus."
         )
     _tA = time.time()
     analyst_finding = pinned.model_dump_json()

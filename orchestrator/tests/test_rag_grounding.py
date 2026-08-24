@@ -50,3 +50,27 @@ def test_model_citations_are_replaced_with_retrieved_sources():
     crew._bind_retrieved_sources([option], {"https://docs.redhat.com/guide"})
 
     assert option.source_urls == ["https://docs.redhat.com/guide"]
+
+
+def test_filter_rag_hits_rejects_other_cve_pages():
+    from cve_parse import filter_rag_hits_for_cve
+
+    hits = [
+        {"text": "CVE-2023-44487 (Important). HTTP/2 Rapid Reset",
+         "source_url": "https://access.redhat.com/security/cve/CVE-2023-44487"},
+        {"text": "Apply kpatch for kernel live patching without reboot",
+         "source_url": "https://docs.redhat.com/kpatch"},
+        {"text": "CVE-2026-31431 livepatch guidance",
+         "source_url": "https://access.redhat.com/security/cve/CVE-2026-31431"},
+    ]
+    kept = filter_rag_hits_for_cve(hits, "CVE-2026-31431")
+    assert [h["source_url"] for h in kept] == [
+        "https://docs.redhat.com/kpatch",
+        "https://access.redhat.com/security/cve/CVE-2026-31431",
+    ]
+
+
+if __name__ == "__main__":
+    test_filter_rag_hits_rejects_other_cve_pages()
+    test_model_citations_are_replaced_with_retrieved_sources()
+    print("ok")

@@ -13,6 +13,7 @@ NO_FIX_STATES = {"Fix deferred", "Will not fix", "Out of support scope", "Affect
 # Trust-boundary input guards: reject a malformed tool arg BEFORE the HTTP round-trip
 # (an LLM occasionally passes "old openssh" or a URL as the CVE). Fail fast, cheaply.
 CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
+CVE_FIND_RE = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
 ADVISORY_RE = re.compile(r"^RH[SBE]A-\d{4}:\d+$", re.IGNORECASE)
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 SEVERITIES = {"low", "moderate", "important", "critical"}
@@ -20,6 +21,26 @@ SEVERITIES = {"low", "moderate", "important", "critical"}
 
 def valid_cve(cve: str) -> bool:
     return bool(CVE_RE.match((cve or "").strip()))
+
+
+def filter_rag_hits_for_cve(hits: list, cve: str) -> list:
+    """Keep only RAG chunks that do not cite a *different* CVE than the pinned one.
+
+    Dense search happily returns other seed CVE blurbs as 'similar'. Trust rule: never
+    treat another CVE's page as mitigation guidance for this case. Chunks that name no
+    CVE (catalog/PDF hardening) stay eligible.
+    """
+    pinned = (cve or "").strip().upper()
+    if not pinned:
+        return list(hits or [])
+    kept = []
+    for hit in hits or []:
+        blob = f"{hit.get('source_url') or ''} {hit.get('text') or ''}"
+        found = {m.group(0).upper() for m in CVE_FIND_RE.finditer(blob)}
+        if found and pinned not in found:
+            continue
+        kept.append(hit)
+    return kept
 
 
 def ndvm_applies_for(fix_state: str) -> bool:
