@@ -42,6 +42,13 @@ TIERS = {
         "orchestrator": ("250m", "512Mi", "1000m", "2Gi"),
         "ui": ("250m", "512Mi", "1000m", "2Gi"),
     },
+    "e2-standard-8": {
+        "postgres": ("500m", "1Gi", "4000m", "4Gi"),
+        "ollama": ("2000m", "2Gi", "6000m", "4Gi"),
+        "ingest": ("250m", "512Mi", "2000m", "2Gi"),
+        "orchestrator": ("500m", "512Mi", "2000m", "2Gi"),
+        "ui": ("250m", "256Mi", "1000m", "1Gi"),
+    },
 }
 
 

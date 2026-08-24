@@ -224,13 +224,64 @@ python3 gcp/gke.py teardown --yes
 
 ## Resource Tiers
 
-| Tier | vCPU | RAM | ~Cost/mo | Postgres | Ollama | Orchestrator | UI |
-|------|------|-----|----------|----------|--------|--------------|----|
-| `e2-medium` | 1 (shared) | 4GB | $25 | 25m | 250m | 10m | 10m |
-| `e2-standard-2` | 2 | 8GB | $49 | 100m | 500m | 100m | 100m |
-| `e2-standard-4` | 4 | 16GB | $97 | 250m | 1000m | 250m | 250m |
+The tier controls the single GKE node and the resource requests/limits rendered into
+the Postgres, Ollama, orchestrator, and UI manifests. Ollama is CPU-only and keeps
+`nomic-embed-text` on a 5Gi persistent volume.
 
-The CPU values above are pod requests. Each manifest also assigns a bounded higher
-CPU and memory limit, so a service can burst without reserving the whole node. Ollama
-is CPU-only and stores its embedding model on a 5Gi persistent volume. Redis, Umami,
-and the local-only ingestion workflow are intentionally absent from GKE.
+| Tier | Node | Node estimate/mo* | Use case | Ollama request / limit | Orchestrator request / limit |
+|------|------|---:|---|---|---|
+| `e2-medium` | 1 shared vCPU, 4GB | ~$25 | Manifest smoke test only; expect slow, contended embedding | 250m / 1 vCPU, 512Mi / 1Gi | 10m / 500m, 256Mi / 1Gi |
+| `e2-standard-2` | 2 vCPU, 8GB | ~$49 | Low-volume proof of concept; one interactive request at a time | 500m / 2 vCPU, 1Gi / 2Gi | 100m / 500m, 256Mi / 1Gi |
+| `e2-standard-4` | 4 vCPU, 16GB | ~$97 | **Recommended tier**; responsive Ollama retrieval and headroom for GKE system pods | 1 vCPU / 4 vCPU, 1Gi / 2Gi | 250m / 1 vCPU, 256Mi / 2Gi |
+| `e2-standard-8` | 8 vCPU, 32GB | ~$194 | Concurrent interactive users or sustained retrieval load | 2 vCPU / 6 vCPU, 2Gi / 4Gi | 500m / 2 vCPU, 512Mi / 2Gi |
+
+\*Node estimates are planning figures only. They exclude persistent disks, the
+ingress load balancer, Artifact Registry storage, Cloud Build, network egress, taxes,
+and Vertex AI model calls. Use the [Google Cloud Pricing Calculator](https://cloud.google.com/products/calculator)
+for the selected region and current price.
+
+### Selecting a tier
+
+Use `e2-standard-4` for a normal interactive RAG deployment:
+
+```bash
+export GKE_MACHINE_TYPE=e2-standard-4
+python3 gcp/gke.py provision
+python3 gcp/gke.py deploy
+```
+
+It provides enough headroom for Postgres, the Ollama embedding service, the API, UI,
+ingress, and GKE system workloads. Use `e2-standard-8` when measured CPU saturation
+or concurrent interactive requests make Ollama retrieval the bottleneck.
+
+For a short functional smoke test, use `e2-standard-2`, then upgrade before
+demonstrating concurrent requests or evaluating RAG latency. Tear the environment
+down when not actively testing:
+
+```bash
+python3 gcp/gke.py teardown --yes
+```
+
+### Why E2, and when to benchmark C4D
+
+E2 is the default because this is a balanced, single-node stack: it is broadly
+available, cost-effective, and hybrid RAG retrieval is already sub-second. Vertex
+model calls, not vector retrieval, dominate end-to-end advice latency. Moving to a
+faster CPU family will not materially reduce those remote model calls.
+
+Google positions C4D for CPU-based inference and reports stronger per-vCPU
+performance than earlier compute-optimized generations. Benchmark
+`c4d-standard-4` or `c4d-standard-8` only if Ollama becomes the measured bottleneck:
+machine availability and price vary by zone, and this deployment has not been
+validated on that family. Verify availability before changing the node pool:
+
+```bash
+gcloud compute machine-types describe c4d-standard-4 \
+  --zone="${GCP_ZONE:-us-central1-a}"
+```
+
+Do not use Spot nodes for this single-node deployment: Postgres and Ollama are
+stateful, so eviction makes the advice service unavailable until recovery. Autopilot
+does not remove the need to size the persistent workloads and is not a clear cost or
+performance improvement for this fixed four-service stack. Redis, Umami, and the
+local-only ingestion workflow are intentionally absent from GKE.
