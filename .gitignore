@@ -10,8 +10,6 @@ data/pdfs/*.pdf
 gcp/backups/*.sql.gz
 
 # docs excluded from this repo (design narrative kept locally)
-CONTEXT.md
-DESIGN.md
 docs/
 pptx/
 video/

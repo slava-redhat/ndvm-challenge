@@ -4,8 +4,9 @@ When patching isn't feasible yet, a Platform Owner describes their environment
 and a CVE and immediately gets **viable mitigation options → risk trade-offs → a
 recommended approach** — each **trusted** (traceable to Red Hat security data) and
 **personalized** to their platform. A CrewAI multi-agent flow does the reasoning, and a
-Python "trust spine" (Red Hat `fix_state` + CISA KEV + FIRST EPSS + CISA/SEI SSVC)
-supplies the facts so the model never guesses the things that must be right.
+Python "trust spine" (Red Hat `fix_state` + CISA KEV + FIRST EPSS + CISA/SEI SSVC +
+an immutable curated mitigation catalog) supplies the facts and recommendation records
+so the model never guesses the things that must be right.
 
 ## How it works
 A **router** agent classifies the user (Primary customer vs Secondary Red Hat TAM),
@@ -35,9 +36,10 @@ account only matters for per-system Insights data, simulated here — see below)
 
 Trust comes from Red Hat's own data: the Analyst reads each CVE's **`fix_state`**
 (`Fix deferred` / `Will not fix` = "patching isn't feasible", the NDVM trigger) and
-VEX (`known_not_affected` = provable "do nothing"). Every option cites its source, and
-the UI tags each source by **provenance tier** (Red Hat authoritative → curated catalog
-→ external) so trust is visible, not assumed.
+VEX (`known_not_affected` = provable "do nothing"). Recommendation cards are exact,
+applicable rows from the curated mitigation catalog: Python owns their stable IDs,
+titles, scores, steps, and URLs. The UI tags every citation by **provenance tier** so
+trust is visible, not assumed.
 
 ## What it does (feature map)
 | Capability | Where | Trust mechanism |
@@ -45,9 +47,10 @@ the UI tags each source by **provenance tier** (Red Hat authoritative → curate
 | **Grounded CVE facts** (fix_state, CVSS, RHSA/NVRA) | Analyst + `redhat_security_data` | parsed in Python from Red Hat's public API |
 | **Exploitation urgency** (KEV + EPSS → tier) | `priority.py` | computed from CISA/FIRST feeds, not the LLM |
 | **SSVC action decision** (Act / Attend / Track*) | `ssvc.py` | CISA Table 9 in Python; inputs from KEV/EPSS + estate |
-| **Non-disruptive options** ranked by disruption/effectiveness/effort | Retriever + Strategist | options only from the local catalog/RAG; each cites a source |
+| **Non-disruptive options** ranked by disruption/effectiveness/effort | Catalog + Python scoring | only applicable catalog rows; IDs, URLs, and steps cannot be invented |
 | **"You may already be protected"** | Control Validator | judges only controls the customer *stated* they run |
 | **Business-language risk** for a non-technical manager | synth `business_risk` | bounded by severity + exposure + KEV/EPSS + SSVC above |
+| **Decision Package** (residual before/after + decision) | `priority.build_decision_package` | deterministic from urgency, SSVC, fix state, controls, and recommendation |
 | **Ask-before-advising** gate | Sufficiency Judge | withholds advice + asks tick-box questions until the case fits |
 | **Respond at scale** — rank a whole estate's CVEs | `GET /triage` | KEV+EPSS+SSVC ordering, customer-specific "not affected → routine" |
 | **Compliance context** (OpenSCAP) | account estate view | carried from the simulated Insights account |
@@ -211,17 +214,18 @@ new or changed (`make sources` shows the ledger).
 - Mitigations: drop a `data/mitigations/<platform>.yaml`, `make ingest`. Grow the
   allow-list via YAML — not by embedding CVE pages. Option synthesis searches
   `doc_type=mitigation` only and fails closed when nothing curated applies.
-  Each YAML row has a stable `id`; Python returns only those catalog records
-  (LLM may rank/explain, never invent options or URLs). Applicability uses
-  `components` / `exclude_components` / `fix_states` / `requires`.
-  PDF chunks are secondary evidence for the **validator** (existing-control prose),
-  not for inventing new options.
+  Each row needs a stable `id`, vetted source URL, catalog-owned steps, and either
+  component applicability (`components`, `exclude_components`, `fix_states`,
+  `requires`) or explicit `scope: generic` for a compensating control. Python returns
+  only those catalog records; the LLM may explain/shortlist IDs but cannot invent an
+  option, URL, or step. PDF chunks are secondary evidence for the **validator**
+  (existing-control prose), not for inventing new options.
 - Hardening docs: **drop PDFs in `data/pdfs/`**, `make ingest`.
 - CVE **facts** are not ingested — runtime reads Red Hat Security Data live (and may
   cache `/cve.json` search hits in table `cve`). Do not embed CVE blurbs into RAG.
 
 ## Retrieval — dense + lexical hybrid
-`mitigation_rag_search` fuses two rankings with **Reciprocal Rank Fusion (RRF)**: dense
+`rag_search_hybrid` fuses two rankings with **Reciprocal Rank Fusion (RRF)**: dense
 (pgvector cosine, catches paraphrase) and lexical (Postgres full-text `ts_rank_cd`,
 catches exact tokens like CVE ids / `kpatch` / `NetworkPolicy` that embeddings bury).
 No new dependency — the FTS is a generated `tsvector` column in the same DB. The curated
@@ -234,8 +238,10 @@ cd orchestrator && PYTHONPATH=. python tests/eval_retrieval.py --mode catalog --
 ## Tests
 ```bash
 cd orchestrator && PYTHONPATH=. python tests/test_cve_parse.py   # trust-critical parser
+cd orchestrator && PYTHONPATH=. python tests/test_rag_grounding.py # catalog/PDF trust boundary
 cd orchestrator && PYTHONPATH=. python tests/eval_retrieval.py --mode both  # retrieval quality
 python orchestrator/priority.py     # KEV/EPSS classifier self-check (network-free)
+python orchestrator/scoring.py      # deterministic option-ranking self-check
 python orchestrator/ssvc.py         # CISA SSVC Table 9 self-check (network-free)
 python orchestrator/models.py       # AdviceResult JSON-string coercion self-check
 ```

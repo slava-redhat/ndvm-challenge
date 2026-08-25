@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field, model_validator
 
 Persona = Literal["primary", "secondary"]
 Platform = Literal["rhel", "openshift", "other"]
+OTHER_OPTION = "Other (describe)"
+NOT_SURE_OPTION = "Not sure"
 
 
 class Intake(BaseModel):
@@ -22,16 +24,16 @@ class Intake(BaseModel):
 class ClarifyQuestion(BaseModel):
     """One LLM-generated question the judge needs answered before advising.
 
-    options empty → UI shows a free-text field (package NEVRA, version, etc.).
-    options non-empty → tick-box / radio choices.
+    The gate uses closed choices. The UI reveals a short detail field only after the
+    user explicitly selects ``Other (describe)``.
     """
     key: str = Field(description="short stable id, e.g. 'maintenance_window'")
     question: str
     options: List[str] = Field(
         default_factory=list,
-        description="2-5 tick-box choices; leave empty for a free-text answer",
+        description="2-4 plain-language choices plus 'Other (describe)'",
     )
-    multi: bool = True   # checkboxes: more than one answer may apply
+    multi: bool = False  # single-choice is safest by default; opt in for control lists
 
 
 class Sufficiency(BaseModel):

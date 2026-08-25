@@ -1,9 +1,11 @@
 # NDVM GKE Workflow
 
 This deployment prepares the GKE equivalents of the persistent pgvector database,
-FastAPI orchestrator, and Streamlit UI. The vector corpus is deliberately cloned from
-the local database rather than re-ingested in GKE. All provisioning and deploy logic
-is in `gcp/gke.py`; no shell wrapper is required.
+FastAPI orchestrator, private Ollama embedding service, and Streamlit UI. The vector
+corpus is deliberately cloned from the local database rather than re-ingested in GKE:
+it includes the curated mitigation catalog, hardening-PDF evidence, vector embeddings,
+and ingestion ledger. Live Red Hat CVE/VEX facts remain runtime API data. All
+provisioning and deploy logic is in `gcp/gke.py`; no shell wrapper is required.
 
 ## Prerequisites
 
@@ -117,19 +119,40 @@ the orchestrator. To copy a later `.env` or ADC credential change:
 python3 gcp/gke.py sync-secrets
 ```
 
+Use a unique image tag for traceability (for example, a release or Git SHA).
+`gke.py deploy` explicitly restarts both the orchestrator and UI Deployments after
+applying images, including when a mutable `latest` tag is reused. For a UI pod deployed
+before that behavior, refresh it once:
+
+```bash
+kubectl -n "${K8S_NAMESPACE:-ndvm}" rollout restart deployment/ui
+kubectl -n "${K8S_NAMESPACE:-ndvm}" rollout status deployment/ui --timeout=180s
+```
+
+Streamlit stores dark/light preference in the browser per origin, so `localhost:8501`
+and the GKE ingress URL can display different themes without a server-side change.
+The UI image pins Streamlit `1.62.0`, so rebuilding the local and GKE UI images uses
+the same frontend runtime.
+
 ## 3. Clone the local vector database
 
-After local ingestion completes, keep the local `db` container running and create a
-compressed backup:
+After changing mitigation YAML or PDFs, update the local corpus first. `make ingest`
+is incremental and is the normal path for a changed catalog; `make reingest` clears and
+re-embeds the whole corpus and is only for a deliberate full rebuild. Keep the local
+`db` container running and create a compressed backup:
 
 ```bash
 make up
+make ingest
+make stats
 make vector-db-backup
 ```
 
 This creates `gcp/backups/ndvm-vector.sql.gz`. It includes every NDVM database table:
-all `doc_chunk` rows and their pgvector embeddings, mitigation/CVE data, product
-states, and the ingestion ledger.
+all `doc_chunk` rows and their pgvector embeddings, catalog metadata/steps/source URLs,
+cached CVE data, product states, and the ingestion ledger. The deployed orchestrator
+uses the catalog fail-closed: only applicable, stable-ID catalog rows can become
+mitigation cards; PDFs remain evidence for existing-control assessment.
 
 Provision and deploy first. Then configure `kubectl` for the cluster and wait until
 the target Postgres pod is ready:

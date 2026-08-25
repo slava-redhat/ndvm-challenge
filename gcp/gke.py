@@ -310,8 +310,7 @@ def deploy(config: Config, tag: str) -> None:
 
     render_and_apply(config, tag, only={"deployment.yaml", "ingress.yaml"})
     for deployment in ("orchestrator", "ui"):
-        if deployment == "orchestrator":
-            kubectl(config, ["rollout", "restart", f"deployment/{deployment}"])
+        kubectl(config, ["rollout", "restart", f"deployment/{deployment}"])
         kubectl(config, ["rollout", "status", f"deployment/{deployment}", "--timeout=180s"])
     print_ingress_address(config)
 

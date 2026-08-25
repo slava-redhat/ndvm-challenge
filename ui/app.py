@@ -396,13 +396,33 @@ def render_triage(tri):
                    "fix_state": r.get("fix_state", "")} for r in tri["cves"]])
 
 
-persona_label = st.radio(
-    "Who are you? (or let the router decide)",
-    ["Auto-detect", "Customer / Platform Owner", "Red Hat Support / TAM"],
-    horizontal=True,
-)
-persona = {"Customer / Platform Owner": "primary",
-           "Red Hat Support / TAM": "secondary"}.get(persona_label)
+ss = st.session_state
+pending = ss.get("pending")  # {questions, orig_msg, cve, persona, answers, round}
+
+PERSONA_OPTIONS = {
+    "auto": ":material/auto_awesome: Let NDVM decide",
+    "primary": ":material/business_center: Platform owner",
+    "secondary": ":material/support_agent: Red Hat TAM",
+}
+with st.container(border=True):
+    st.markdown("#### Start your mitigation briefing")
+    st.caption("Choose the view that fits your role, or let NDVM tailor it from your question.")
+    persona_choice = st.segmented_control(
+        "Who are you?",
+        options=list(PERSONA_OPTIONS),
+        format_func=PERSONA_OPTIONS.get,
+        default="auto",
+        required=True,
+        key="persona_choice",
+        width="stretch",
+        disabled=bool(pending),
+    )
+persona_label = {
+    "auto": "Auto-detect",
+    "primary": "Customer / Platform Owner",
+    "secondary": "Red Hat Support / TAM",
+}[persona_choice]
+persona = {"primary": "primary", "secondary": "secondary"}.get(persona_choice)
 
 # Three tailored inputs — one per persona.
 account = ""  # only the TAM flow selects a customer account to look up
@@ -412,7 +432,8 @@ if persona == "secondary":
     accounts = fetch_accounts()
     labels = ["(no account — I'll describe it)"] + [
         f"{a['account_name']} · {a.get('industry','')}" for a in accounts]
-    pick = st.selectbox("Customer account", labels, index=1 if accounts else 0)
+    pick = st.selectbox("Customer account", labels, index=1 if accounts else 0,
+                        disabled=bool(pending))
     if pick != labels[0]:
         account = accounts[labels.index(pick) - 1]["account_name"]
         render_triage(fetch_triage(account))
@@ -421,6 +442,7 @@ if persona == "secondary":
         placeholder="e.g. CVE-2024-1086 — which of their hosts are affected and what can "
                     "they do without a reboot?",
         height=90,
+        disabled=bool(pending),
     )
 elif persona == "primary":
     st.caption("**Customer / Platform Owner** — describe your situation; I'll ask a few "
@@ -430,6 +452,7 @@ elif persona == "primary":
         placeholder="e.g. CVE-2023-3390 is flagged on my RHEL 8 fleet. I can't reboot for "
                     "patching until the quarter-end maintenance window. What can I do now?",
         height=110,
+        disabled=bool(pending),
     )
 else:
     st.caption("**Auto-detect** — just describe it. Name a known customer (e.g. *Meridian*) "
@@ -439,6 +462,7 @@ else:
         placeholder="e.g. Is Meridian Telecom affected by CVE-2023-3390, and what can they "
                     "do without rebooting?",
         height=110,
+        disabled=bool(pending),
     )
 
 MAX_ROUNDS = 2  # ponytail: stop questioning after 2 rounds and advise anyway (force)
@@ -621,33 +645,46 @@ def render_advice(intake, advice, account=None):
     render_audit(advice.get("audit", []))
 
 
-ss = st.session_state
-pending = ss.get("pending")  # {questions, orig_msg, persona, answers, round}
-
 # Phase 2 — the sufficiency judge asked for more; collect answers.
 if pending:
-    st.info("A few quick questions so the advice fits **your** environment — I won't guess. "
-            "Answer what applies, then submit.")
+    pending_cve = pending.get("cve") or "this CVE"
+    st.info(f"Answering follow-up questions for **{pending_cve}**. I won't guess.")
+    if st.button("Start a new question", key="cancel_pending",
+                 icon=":material/restart_alt:"):
+        ss.pop("pending", None)
+        ss.pop("result", None)
+        st.rerun()
     if pending.get("missing"):
         st.caption("Still unclear: " + " · ".join(pending["missing"]))
-    with st.form("clarify"):
-        picks = {}
+    with st.container(border=True):
+        picks = []
         for i, q in enumerate(pending["questions"]):
             label = q["question"]
             opts = [o for o in (q.get("options") or []) if str(o).strip()]
-            key = f"q_{i}_{q.get('key','')}"
             if not opts:
-                typed = st.text_input(label, key=key,
-                                      placeholder="Type the exact value (e.g. kernel-4.18.0-477.el8)")
-                picks[label] = [typed.strip()] if typed and typed.strip() else []
-            elif q.get("multi", True):
-                picks[label] = st.multiselect(label, opts, key=key)
+                opts = ["Not sure", "Other (describe)"]
+            key = f"q_{i}_{q.get('key','')}"
+            if q.get("multi", False):
+                values = st.multiselect(label, opts, key=key)
             else:
-                picks[label] = [v] if (v := st.radio(label, opts, key=key)) else []
-        submitted = st.form_submit_button("Submit answers →", type="primary")
+                values = [st.radio(label, opts, key=key)]
+            other = next((value for value in values
+                          if str(value).lower().startswith("other")), "")
+            values = [value for value in values if value != other]
+            if other:
+                detail = st.text_input(
+                    "Add a short detail",
+                    key=f"{key}_other",
+                    placeholder="Only if a listed choice does not fit",
+                ).strip()
+                values.append(f"Other: {detail}" if detail else "Other")
+            picks.append((q.get("key", ""), label, values))
+        submitted = st.button("Submit answers →", type="primary", key="clarify_submit")
     if submitted:
-        new = "\n".join(f"{lbl}: {', '.join(v) if v else '(no answer)'}"
-                        for lbl, v in picks.items())
+        new = "\n".join(
+            f"[{key}] {label}: {', '.join(values) if values else '(no answer)'}"
+            for key, label, values in picks
+        )
         merged = (pending["answers"] + "\n" + new).strip()
         # CVE disambiguation is not a sufficiency round — keep budget for real gate Qs.
         only_cve_pick = (
@@ -662,7 +699,8 @@ if pending:
             ss["pending"] = {"questions": data["questions"], "missing": data.get("missing", []),
                              "orig_msg": pending["orig_msg"], "persona": pending["persona"],
                              "answers": merged, "round": rnd,
-                             "account": pending.get("account", "")}
+                             "account": pending.get("account", ""),
+                             "cve": (data.get("intake") or {}).get("cve") or pending.get("cve", "")}
             ss.pop("result", None)
         else:
             ss.pop("pending", None)
@@ -675,7 +713,8 @@ elif st.button("Get mitigation options", type="primary") and msg.strip():
     if data.get("status") == "need_info":
         ss["pending"] = {"questions": data["questions"], "missing": data.get("missing", []),
                          "orig_msg": msg, "persona": persona, "answers": "", "round": 1,
-                         "account": account}
+                         "account": account,
+                         "cve": (data.get("intake") or {}).get("cve", "")}
         ss.pop("result", None)
     else:
         ss["result"] = data

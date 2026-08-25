@@ -42,7 +42,7 @@ from llm import get_llm
 import progress
 from playbook import build_playbook
 from models import (AdviceResult, ClarifyQuestion, ControlReport, CveChoice, ExploitSignal,
-                    Intake, Sufficiency, VulnFinding)
+                    Intake, NOT_SURE_OPTION, OTHER_OPTION, Sufficiency, VulnFinding)
 from priority import (adjust_tier, apply_ssvc_context, assess, build_decision_package,
                       classify, compliance_note, compliance_signal, priority_note)
 from scoring import rank_options
@@ -55,6 +55,12 @@ _SYNTH_MAX_TOKENS = int(_os.environ.get("NDVM_SYNTH_MAX_TOKENS", "8192"))
 _CVE_YEAR_DOUBT = re.compile(
     r"(future\s+year|verify.{0,40}cve|correct\s+cve\s+ident|cve\s+number\s+shows|"
     r"cve.{0,20}(look|seem|appear).{0,20}(wrong|invalid|future))",
+    re.I,
+)
+_DETECTION_METHOD_QUESTION = re.compile(
+    r"\b(?:how|where|which)\b.{0,80}\b(?:detect(?:ed|ion)?|find|found|discover|"
+    r"scanner|audit|insights)\b|\b(?:scanner|audit|insights)\b.{0,80}\b"
+    r"(?:detect(?:ed|ion)?|find|found|discover)\b",
     re.I,
 )
 
@@ -82,9 +88,59 @@ def _drop_cve_year_doubt_questions(gate: Sufficiency, cve: str) -> Sufficiency:
     return gate.model_copy(update={"questions": kept})
 
 
+def _drop_questions(gate: Sufficiency, predicate) -> Sufficiency:
+    """Remove invalid/redundant questions; avoid an insufficient gate with no next step."""
+    if gate.sufficient or not gate.questions:
+        return gate
+    kept = [question for question in gate.questions if not predicate(question)]
+    if len(kept) == len(gate.questions):
+        return gate
+    if not kept:
+        return Sufficiency(sufficient=True, missing=gate.missing, questions=[])
+    return gate.model_copy(update={"questions": kept})
+
+
+def _answered_gate_keys(answers: str) -> set[str]:
+    """Keys are preserved in UI answer lines so a 'Not sure' answer is still final."""
+    return {
+        match.group(1).strip().lower()
+        for match in re.finditer(r"^\[([a-z0-9_-]+)\]", answers or "", re.MULTILINE | re.I)
+    }
+
+
+def _sanitize_gate_questions(gate: Sufficiency, cve: str, answers: str) -> Sufficiency:
+    """Enforce non-negotiable gate UX rules after the LLM returns."""
+    gate = _drop_cve_year_doubt_questions(gate, cve)
+    gate = _drop_questions(
+        gate, lambda question: bool(_DETECTION_METHOD_QUESTION.search(question.question or ""))
+    )
+    answered = _answered_gate_keys(answers)
+    if answered:
+        gate = _drop_questions(gate, lambda question: (question.key or "").lower() in answered)
+    return _normalize_gate_questions(gate)
+
+
+def _normalize_gate_questions(gate: Sufficiency) -> Sufficiency:
+    """Keep the gate choice-first: no free-text question without an explicit Other choice."""
+    if gate.sufficient or not gate.questions:
+        return gate
+    normalized = []
+    for question in gate.questions[:4]:
+        options = list(dict.fromkeys(
+            str(option).strip() for option in question.options if str(option).strip()
+        ))
+        has_other = any(option.lower().startswith("other") for option in options)
+        if not options:
+            options = [NOT_SURE_OPTION, OTHER_OPTION]
+        elif not has_other:
+            options = options[:4] + [OTHER_OPTION]
+        normalized.append(question.model_copy(update={"options": options}))
+    return gate.model_copy(update={"questions": normalized})
+
+
 def _esc(s: str) -> str:
-    """Break {token} shapes so CrewAI interpolate_only cannot rewrite injected text."""
-    return (s or "").replace("{", "(").replace("}", ")")
+    """Break {token} shapes without changing the literal value the LLM should understand."""
+    return (s or "").replace("{", r"\u007b").replace("}", r"\u007d")
 
 
 def _require_pydantic(out, label: str):
@@ -218,16 +274,17 @@ def _gate_agent() -> Agent:
     return Agent(
         role="Environment Sufficiency Judge",
         goal=("Refuse to advise until this customer's specific environment is understood; "
-              "otherwise ask a few precise tick-box questions."),
+              "otherwise ask a few precise, easy closed-choice questions."),
         backstory=(
             "You are a meticulous Red Hat TAM lead who has watched bad advice come from "
-            "guessing. Before anyone proposes a mitigation you insist on knowing the REAL "
-            "case: how the CVE surfaced (which scanner / Insights / audit), the exact "
-            "affected component and version, how the system is exposed (internet-facing, "
-            "internal, air-gapped), whether backups / snapshots / DR exist, and the true "
-            "maintenance-window timing. You never pad with generic questions — every "
-            "question you ask would actually change the recommendation. You do NOT suggest "
-            "upgrading or mitigating a CVE until the picture fits."
+            "guessing. Before anyone proposes a mitigation you establish the CURRENT "
+            "environment: exposure, controls already in force, backup/restore and DR "
+            "readiness, whether traffic or workloads can move to a standby site, lab, "
+            "another cluster, or another cloud, and the maintenance constraint. How a CVE "
+            "was detected (scanner, audit, or Insights) does not change mitigation and is "
+            "not a question. You never pad with generic questions — every question you ask "
+            "would change the recommendation. You do NOT suggest upgrading or mitigating a "
+            "CVE until the picture fits."
         ),
         llm=get_llm(), verbose=False,
     )
@@ -267,18 +324,24 @@ def run_gate(message: str, intake: Intake, answers: str = "") -> Sufficiency:
             "cve='{cve}', constraint='{constraint}'.\n"
             "Answers already gathered from earlier questions (may say 'none'):\n---\n{answers}\n---\n"
             "{cve_year_context}\n"
-            "Judge like a TAM: do you know where/how the vuln was detected, the exact "
-            "affected component+version, the exposure, the security controls already in "
-            "place (SELinux, firewall, network segmentation, FIPS, IdM), whether backups/DR "
-            "exist, and the real maintenance window? If key pieces are missing, you are NOT "
-            "sufficient.\n"
-            "If NOT sufficient: set sufficient=false and generate up to 5 crisp questions.\n"
-            "Question shapes:\n"
-            "- Closed facts (exposure, controls, window): 2-5 concrete tick-box options, "
-            "multi=true/false as appropriate.\n"
-            "- Open facts the user must TYPE (exact package name, NEVRA, kernel/rpm version, "
-            "host name): leave options=[] so the UI shows a free-text field. Never ask them "
-            "to 'specify' something with only tick boxes and no text box.\n"
+            "Judge like a TAM: do you know enough about exposure, the security controls "
+            "already in place (SELinux, firewall, network segmentation, FIPS, IdM), backup "
+            "and restore/DR readiness, whether traffic or workloads can move to a standby "
+            "site, lab, another cluster, or another cloud, and the real maintenance "
+            "constraint? If key pieces are missing, you are NOT sufficient. Do NOT ask how "
+            "the CVE was detected, which scanner found it, or about audit/Insights source.\n"
+            "If NOT sufficient: set sufficient=false and generate up to 4 crisp questions.\n"
+            "Every question MUST have 2-4 plain-language closed choices plus exactly "
+            f"'{OTHER_OPTION}'. Set multi=true only when several controls/capabilities can "
+            "apply; otherwise use multi=false. Never leave options empty and never ask the "
+            "customer to type an answer unless they choose Other.\n"
+            "Prioritize questions about existing controls, safe rollback/backup and tested "
+            "restore, DR/failover capacity, and traffic/workload shifting before asking for "
+            "low-value implementation detail. For DR/failover, prefer concrete options such "
+            "as 'tested DR/standby ready', 'DR exists but has not been tested', 'can move "
+            "traffic/workloads to another cluster or cloud', and 'no safe alternate capacity'. "
+            "If an exact package/version would change advice, offer Other rather than forcing "
+            "a free-text question.\n"
             "Only ask what would change the recommendation, and do not re-ask anything "
             "already answered above. Never ask to verify/correct the CVE id when it is "
             "already well-formed (CVE-YYYY-NNNN).\n"
@@ -297,7 +360,7 @@ def run_gate(message: str, intake: Intake, answers: str = "") -> Sufficiency:
     # Empty question list with insufficient=true stuck UX — treat as sufficient.
     if not gate.sufficient and not gate.questions:
         return Sufficiency(sufficient=True, missing=gate.missing, questions=[])
-    return _drop_cve_year_doubt_questions(gate, intake.cve)
+    return _sanitize_gate_questions(gate, intake.cve, answers)
 
 
 # ---- Advice crew (shared analysis + persona synthesizer) ---------------------
