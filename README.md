@@ -11,7 +11,9 @@ so the model never guesses the things that must be right.
 ## How it works
 A **router** agent classifies the user (Primary customer vs Secondary Red Hat TAM),
 a **sufficiency gate** refuses to advise until it understands *this* environment
-(asking a few tick-box questions if not), then a crew reasons over grounded data:
+(asking closed-choice questions about existing controls, DR/failover readiness,
+exposure, and maintenance constraints — with "Other (describe)" as the only
+free-text escape), then a crew reasons over grounded data:
 
 ```
 Router ─▶ Sufficiency Gate ─▶ Profiler ─▶ CVE Researcher ─▶ Vulnerability Analyst ─▶ Retriever ─▶ Control Validator ─▶ Strategist ─▶ Advisor / TAM Briefer
@@ -48,10 +50,11 @@ trust is visible, not assumed.
 | **Exploitation urgency** (KEV + EPSS → tier) | `priority.py` | computed from CISA/FIRST feeds, not the LLM |
 | **SSVC action decision** (Act / Attend / Track*) | `ssvc.py` | CISA Table 9 in Python; inputs from KEV/EPSS + estate |
 | **Non-disruptive options** ranked by disruption/effectiveness/effort | Catalog + Python scoring | only applicable catalog rows; IDs, URLs, and steps cannot be invented |
-| **"You may already be protected"** | Control Validator | judges only controls the customer *stated* they run |
+| **"You may already be protected"** | Control Validator + `control_matrix.py` | LLM reasoning floored by a deterministic control-vs-attack-class matrix |
 | **Business-language risk** for a non-technical manager | synth `business_risk` | bounded by severity + exposure + KEV/EPSS + SSVC above |
 | **Decision Package** (residual before/after + decision) | `priority.build_decision_package` | deterministic from urgency, SSVC, fix state, controls, and recommendation |
-| **Ask-before-advising** gate | Sufficiency Judge | withholds advice + asks tick-box questions until the case fits |
+| **Ask-before-advising** gate | Sufficiency Judge | closed-choice cards (radio/multi) with "Other (describe)" escape; focuses on controls, DR/failover, exposure |
+| **Catalog ID uniqueness** | ingest + DB constraint | fail-fast duplicate check across all YAML files + unique partial index on `doc_chunk` |
 | **Respond at scale** — rank a whole estate's CVEs | `GET /triage` | KEV+EPSS+SSVC ordering, customer-specific "not affected → routine" |
 | **Compliance context** (OpenSCAP) | account estate view | carried from the simulated Insights account |
 | **Provenance tiers** on every citation | UI + md/pdf export | source URL classified Red Hat / curated / external |
@@ -190,22 +193,95 @@ POST /advise                     # {message, persona?, answers?, force?, account
 
 ## Make targets
 ```
-make up        # build + start the full stack
-make ingest    # incremental: embed only new/changed sources
-make reingest  # force full rebuild (clears + re-embeds)
-make sources   # the ledger — exactly what's ingested (kind, source, chunks, when)
-make stats     # corpus totals
-make pdfs      # where to drop PDFs + what's there
-make down / make clean   # stop / stop+wipe data volume
+make up                # build + start the full stack (db, orchestrator, ui)
+make down              # stop the stack (keeps data volume)
+make clean             # stop + wipe data volume (full reset)
+make ingest            # incremental: embed only new/changed sources
+make reingest          # force full rebuild (clears + re-embeds everything)
+make sources           # the ledger — exactly what's ingested (kind, source, chunks, when)
+make stats             # corpus totals (chunks / mitigations / CVEs)
+make pdfs              # where to drop PDFs + what's there now
+make health            # orchestrator health check (curl /health)
+make test              # run the trust-critical CVE parser test
+make vector-db-backup  # export local pgvector DB to gcp/backups/ndvm-vector.sql.gz
+make vector-db-restore # restore backup into the current kubectl context (GKE)
 ```
 
 ## GKE deployment
 
-The production GKE workflow, rendered Kubernetes manifests, and Python deployment
-command are in [`gcp/GKE-WORKFLOW.md`](gcp/GKE-WORKFLOW.md). It deploys Postgres,
-the orchestrator, and the UI using the untracked ADC credential file stored as a
-Kubernetes Secret; `make vector-db-backup` and `make vector-db-restore` clone the
-local pgvector database into the target cluster.
+Full workflow in [`gcp/GKE-WORKFLOW.md`](gcp/GKE-WORKFLOW.md). All provisioning and
+deploy logic lives in `gcp/gke.py` — no shell wrappers.
+
+### Architecture
+
+GKE deploys four services into a single namespace (`ndvm`):
+- **Postgres** (StatefulSet, 10Gi PVC) — pgvector + schema from `db/schema.sql`
+- **Ollama** (StatefulSet, 5Gi PVC) — private `nomic-embed-text` for query-time
+  embeddings; the orchestrator reaches it at `http://ollama:11434`
+- **Orchestrator** (Deployment) — FastAPI + CrewAI; reads Vertex ADC from a Secret
+- **UI** (Deployment) — Streamlit; talks to orchestrator internally
+
+Ingress-nginx routes `/` to the UI and `/health`, `/advise`, `/triage`, `/accounts`
+to the orchestrator.
+
+### Provision → Deploy → DB clone
+
+```bash
+conda activate gcp-auth                    # isolated GCP auth env
+export GCP_PROJECT_ID="your-project"
+export GKE_MACHINE_TYPE=e2-standard-4      # recommended tier
+
+python3 gcp/gke.py provision              # GKE cluster + Artifact Registry + ingress-nginx
+python3 gcp/gke.py deploy                 # build images, push, create secrets, apply manifests
+python3 gcp/gke.py deploy --tag v1.0.0    # tagged release
+
+# Clone the local vector database (ingest is local-only)
+make vector-db-backup                      # → gcp/backups/ndvm-vector.sql.gz
+make vector-db-restore                     # → scales orchestrator to 0, restores, scales back
+```
+
+### Secrets and credentials
+
+`gke.py deploy` creates two Kubernetes Secrets on first run:
+- **`ndvm-secrets`** — from `.env` (Postgres creds, Vertex model names); excludes
+  `OLLAMA_*`, `INGEST_*`, and local ADC variables so GKE always uses the in-cluster
+  Ollama and its own ADC
+- **`ndvm-google-credentials`** — the untracked `.application_default_credentials.json`
+  (Vertex AI ADC)
+
+Synthetic TAM estates (`data/accounts/*.json`) go into the `ndvm-account-data` ConfigMap.
+After changing `.env`, ADC, or account files:
+
+```bash
+python3 gcp/gke.py sync-secrets           # updates secrets + restarts orchestrator
+```
+
+### DB migration
+
+The schema (`db/schema.sql`) runs at Postgres container startup. For schema changes
+after initial deploy, the vector-db-restore path handles it: `make vector-db-backup`
+captures all tables, `make vector-db-restore` drops and re-creates them in the GKE
+Postgres. For additive changes (new indexes, columns), apply them directly:
+
+```bash
+kubectl -n ndvm exec -i statefulset/postgres -- psql -U ndvm ndvm < db/schema.sql
+```
+
+### Resource tiers
+
+| Tier | Node | ~$/mo | Use case |
+|------|------|------:|----------|
+| `e2-medium` | 1 shared vCPU, 4GB | $25 | Manifest smoke test only |
+| `e2-standard-2` | 2 vCPU, 8GB | $49 | Single-user proof of concept |
+| `e2-standard-4` | 4 vCPU, 16GB | $97 | **Recommended** — responsive retrieval |
+| `e2-standard-8` | 8 vCPU, 32GB | $194 | Concurrent users |
+
+### Other commands
+
+```bash
+python3 gcp/gke.py ingress --wait         # print the external URL (waits for LB)
+python3 gcp/gke.py teardown --yes          # irreversibly removes cluster + images
+```
 
 ## Adding platforms / mitigations / docs
 Ingest is **incremental**: each source (yaml/pdf basename) is recorded in
@@ -237,11 +313,26 @@ cd orchestrator && PYTHONPATH=. python tests/eval_retrieval.py --mode catalog --
 
 ## Tests
 ```bash
-cd orchestrator && PYTHONPATH=. python tests/test_cve_parse.py   # trust-critical parser
-cd orchestrator && PYTHONPATH=. python tests/test_rag_grounding.py # catalog/PDF trust boundary
+# Orchestrator unit/integration tests
+cd orchestrator && PYTHONPATH=. python tests/test_cve_parse.py        # trust-critical parser
+cd orchestrator && PYTHONPATH=. python tests/test_rag_grounding.py    # catalog/PDF trust boundary
+cd orchestrator && PYTHONPATH=. python tests/test_multi_cve_gate.py   # multi-CVE disambiguation
+cd orchestrator && PYTHONPATH=. python tests/test_cve_year_gate.py    # CVE-year-doubt guardrail
+cd orchestrator && PYTHONPATH=. python tests/test_cve_search.py       # Red Hat CVE search tool
+cd orchestrator && PYTHONPATH=. python tests/test_account_routing.py  # TAM account detection
+cd orchestrator && PYTHONPATH=. python tests/test_synthesis_llm.py    # synth output coercion
 cd orchestrator && PYTHONPATH=. python tests/eval_retrieval.py --mode both  # retrieval quality
-python orchestrator/priority.py     # KEV/EPSS classifier self-check (network-free)
-python orchestrator/scoring.py      # deterministic option-ranking self-check
-python orchestrator/ssvc.py         # CISA SSVC Table 9 self-check (network-free)
-python orchestrator/models.py       # AdviceResult JSON-string coercion self-check
+
+# Self-checks (no network, no DB)
+python orchestrator/priority.py        # KEV/EPSS classifier
+python orchestrator/scoring.py         # deterministic option ranking
+python orchestrator/ssvc.py            # CISA SSVC Table 9
+python orchestrator/models.py          # AdviceResult JSON-string coercion
+python orchestrator/control_matrix.py  # control-vs-CVE-type validation matrix
+python orchestrator/catalog.py         # catalog applicability gates
+
+# Ingest + UI + GKE tests
+python -m pytest ingest/tests/         # PDF source mapping
+python -m pytest ui/tests/             # gate follow-up UX
+python -m pytest gcp/tests/            # GKE deploy + Ollama manifests
 ```
