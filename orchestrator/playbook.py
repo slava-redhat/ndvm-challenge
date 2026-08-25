@@ -261,8 +261,214 @@ _VEX = """\
           https://access.redhat.com/security/data/csaf/v2/vex/
 """
 
+# ---- curated templates for catalog `config`/`compensating` options that used to
+# fall to the debug-only scaffold. Keyed by catalog_id (see _TEMPLATES / build).
+# ansible.builtin only — no collection needed to run or lint them. ----
+
+_RHEL_SERVICE_RESTART = """\
+- name: Apply the userspace fix and restart only the affected service for __CVE__
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  vars:
+    affected_package: "PACKAGE"   # FILL IN: the fixed package, e.g. openssh-server
+    affected_service: "SERVICE"   # FILL IN: the unit to restart, e.g. sshd
+  tasks:
+    - name: Assert the package and service have been set
+      ansible.builtin.assert:
+        that:
+          - affected_package != 'PACKAGE'
+          - affected_service != 'SERVICE'
+        fail_msg: Set affected_package and affected_service before running.
+    - name: Update only the affected userspace package (not the kernel)
+      ansible.builtin.dnf:
+        name: "{{ affected_package }}"
+        state: latest  # noqa: package-latest -- applying the fixed version is the point
+    - name: Restart only the affected service so it runs the patched binary
+      ansible.builtin.systemd:
+        name: "{{ affected_service }}"
+        state: restarted
+"""
+
+_RHEL_SYSTEMD_HARDEN = """\
+- name: Contain a userspace service with systemd hardening for __CVE__
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  vars:
+    affected_service: "SERVICE"   # FILL IN: unit to harden, e.g. myapp.service
+  tasks:
+    - name: Assert the service has been set
+      ansible.builtin.assert:
+        that: affected_service != 'SERVICE'
+        fail_msg: Set affected_service to the unit to harden before running.
+    - name: Ensure the systemd drop-in directory exists
+      ansible.builtin.file:
+        path: "/etc/systemd/system/{{ affected_service }}.d"
+        state: directory
+        mode: "0755"
+    - name: Add a systemd hardening drop-in (confines the service, no package change)
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/{{ affected_service }}.d/10-ndvm-hardening.conf"
+        mode: "0644"
+        content: |
+          [Service]
+          ProtectSystem=strict
+          NoNewPrivileges=yes
+          PrivateTmp=yes
+          CapabilityBoundingSet=
+    - name: Reload systemd so the drop-in takes effect
+      ansible.builtin.systemd:
+        daemon_reload: true
+    - name: Restart the service under the new confinement
+      ansible.builtin.systemd:
+        name: "{{ affected_service }}"
+        state: restarted
+"""
+
+_RHEL_SSHD = """\
+- name: Harden OpenSSH to reduce exploitability for __CVE__
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  vars:
+    max_startups: "10:30:60"   # tighten the connection-flood window (see linked solution)
+    login_grace_time: "30"
+  tasks:
+    - name: Set MaxStartups in sshd_config (validated before it is saved)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?\\s*MaxStartups'
+        line: "MaxStartups {{ max_startups }}"
+        validate: /usr/sbin/sshd -t -f %s
+    - name: Set LoginGraceTime in sshd_config (validated before it is saved)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?\\s*LoginGraceTime'
+        line: "LoginGraceTime {{ login_grace_time }}"
+        validate: /usr/sbin/sshd -t -f %s
+    - name: Reload sshd to apply the hardened settings
+      ansible.builtin.systemd:
+        name: sshd
+        state: reloaded
+"""
+
+_RHEL_HTTP = """\
+- name: Reduce web-server / HTTP attack surface for __CVE__
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  vars:
+    # FILL IN: the httpd directive that turns off the vulnerable protocol/module,
+    # e.g. "Protocols http/1.1" to disable HTTP/2.
+    hardening_directive: "Protocols http/1.1"
+    httpd_service: httpd
+  tasks:
+    - name: Apply the surface-reduction directive to httpd
+      ansible.builtin.copy:
+        dest: /etc/httpd/conf.d/zz-ndvm-hardening.conf
+        mode: "0644"
+        content: "{{ hardening_directive }}\\n"
+    - name: Validate the full httpd configuration before reloading
+      ansible.builtin.command: /usr/sbin/httpd -t
+      changed_when: false
+    - name: Reload httpd to apply the change
+      ansible.builtin.systemd:
+        name: "{{ httpd_service }}"
+        state: reloaded
+"""
+
+_RHEL_CRYPTO = """\
+- name: Raise the system crypto policy to refuse weak algorithms for __CVE__
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  vars:
+    crypto_policy: FUTURE   # or DEFAULT:NO-SHA1, or FIPS where required
+  tasks:
+    - name: Show the current crypto policy
+      ansible.builtin.command: update-crypto-policies --show
+      register: current_policy
+      changed_when: false
+    - name: Set the stricter crypto policy
+      ansible.builtin.command: "update-crypto-policies --set {{ crypto_policy }}"
+      register: set_policy
+      changed_when: crypto_policy not in current_policy.stdout
+    - name: Remind to restart TLS-using services to adopt the new policy
+      ansible.builtin.debug:
+        msg: Restart TLS-using services (or re-open sessions) so they pick up the new crypto policy.
+"""
+
+_RHEL_CONTAINER_RUNTIME = """\
+- name: Confine container runtime socket exposure for __CVE__
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  vars:
+    runtime_socket: "/run/podman/podman.sock"   # FILL IN: the runtime API socket
+    socket_group: root
+  tasks:
+    - name: Restrict access to the container runtime socket (removes untrusted reach)
+      ansible.builtin.file:
+        path: "{{ runtime_socket }}"
+        mode: "0660"
+        group: "{{ socket_group }}"
+"""
+
+_RHEL_INSIGHTS = """\
+- name: Apply the reviewed Red Hat Insights remediation playbook for __CVE__
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # FILL IN: path to the remediation playbook you generated AND reviewed in Insights.
+    insights_playbook: "PLAYBOOK.yml"
+  tasks:
+    - name: Assert the reviewed Insights playbook path has been set
+      ansible.builtin.assert:
+        that: insights_playbook != 'PLAYBOOK.yml'
+        fail_msg: Generate and review the Insights remediation playbook, then set its path.
+    - name: Check the reviewed remediation playbook exists
+      ansible.builtin.stat:
+        path: "{{ insights_playbook }}"
+      register: rem_pb
+    - name: Fail early if the remediation playbook is missing
+      ansible.builtin.assert:
+        that: rem_pb.stat.exists
+        fail_msg: "Remediation playbook not found: {{ insights_playbook }}"
+    - name: Run the reviewed Insights remediation playbook (dry-run; drop --check to apply)
+      ansible.builtin.command: "ansible-playbook {{ insights_playbook }} --check"
+      changed_when: false
+"""
+
+_OS_ACS = """\
+- name: Enforce a Red Hat ACS policy to block the risky deployment for __CVE__
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    central_url: "https://CENTRAL_HOST:443"   # FILL IN: ACS Central endpoint
+    api_token: "API_TOKEN"                    # FILL IN: ACS API token (store in a vault)
+    policy_id: "POLICY_ID"                    # FILL IN: the policy to enforce
+  tasks:
+    - name: Assert ACS connection details have been set
+      ansible.builtin.assert:
+        that:
+          - "'CENTRAL_HOST' not in central_url"
+          - api_token != 'API_TOKEN'
+          - policy_id != 'POLICY_ID'
+        fail_msg: Set central_url, api_token and policy_id before running.
+    - name: Turn on build/deploy enforcement for the policy (blocks the vulnerable image)
+      ansible.builtin.uri:
+        url: "{{ central_url }}/v1/policies/{{ policy_id }}"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ api_token }}"
+        body_format: json
+        body:
+          enforcementActions:
+            - FAIL_BUILD_ENFORCEMENT
+            - FAIL_DEPLOYMENT_CREATE_ENFORCEMENT
+        status_code: 200
+"""
+
 # platform, action_type -> template. Title keywords disambiguate the OpenShift
-# 'config' options (SCC vs admission policy).
+# 'config' options (SCC vs admission policy). Entries keyed by catalog_id are
+# selected directly by build_playbook when the recommended option matches.
 _TEMPLATES = {
     "rhel_kpatch": _RHEL_KPATCH,
     "rhel_selinux": _RHEL_SELINUX,
@@ -273,6 +479,15 @@ _TEMPLATES = {
     "os_scale": _OS_SCALE,
     "os_admission": _OS_ADMISSION,
     "vex": _VEX,
+    # keyed by catalog_id (was scaffold before):
+    "rhel_service_restart": _RHEL_SERVICE_RESTART,
+    "rhel_systemd_harden": _RHEL_SYSTEMD_HARDEN,
+    "rhel_openssh_harden": _RHEL_SSHD,
+    "rhel_http_surface": _RHEL_HTTP,
+    "rhel_crypto_policy": _RHEL_CRYPTO,
+    "rhel_container_runtime": _RHEL_CONTAINER_RUNTIME,
+    "rhel_insights_remediation": _RHEL_INSIGHTS,
+    "ocp_acs_policy": _OS_ACS,
 }
 
 
@@ -348,21 +563,22 @@ def _slug(cve):
 
 
 def build_playbook(*, platform, action_type, title, steps, source_urls,
-                   cve="", fix_state="", rhsa="", product="", version="") -> str:
+                   cve="", fix_state="", rhsa="", product="", version="",
+                   catalog_id="") -> str:
     """Recommended option -> a valid Ansible playbook string (header + one play).
 
     Deterministic and grounded: curated catalog options render a real, tested
     template; everything else renders a scaffold of the option's documented steps.
     Never returns invalid YAML and never invents concrete values it can't know —
     those surface as FILL-IN vars guarded by an assert.
+
+    catalog_id, when it names a curated template, selects it directly — the robust
+    path (stable ids), falling back to the platform/action_type/title heuristic.
     """
-    tid = _resolve(platform, action_type, title)
-    if tid == "scaffold":
-        play = _scaffold(title, steps, cve)
-    else:
-        play = (_TEMPLATES[tid]
-                .replace("__CVE_SLUG__", _slug(cve))
-                .replace("__CVE__", cve or "the reported CVE"))
+    tid = catalog_id if catalog_id in _TEMPLATES else _resolve(platform, action_type, title)
+    play = _scaffold(title, steps, cve) if tid == "scaffold" else _TEMPLATES[tid]
+    # Substitute on both paths — the scaffold bakes __CVE__ into its play name too.
+    play = play.replace("__CVE_SLUG__", _slug(cve)).replace("__CVE__", cve or "the reported CVE")
     header = _header(title, cve, fix_state, rhsa, product, version, source_urls, tid)
     return header + "---\n" + play
 
@@ -389,6 +605,7 @@ if __name__ == "__main__":
     expected_ids = ["rhel_kpatch", "rhel_selinux", "rhel_firewalld", "rhel_disable",
                     "vex", "os_networkpolicy", "os_scc", "os_admission", "os_scale",
                     "scaffold", "scaffold"]
+    all_pbs = []  # every generated playbook feeds the ansible-lint gate below
     for (plat, at, title), want in zip(cases, expected_ids):
         assert _resolve(plat, at, title) == want, f"{title!r} -> {_resolve(plat, at, title)} != {want}"
         pb = build_playbook(platform=plat, action_type=at, title=title,
@@ -400,11 +617,59 @@ if __name__ == "__main__":
         assert isinstance(doc, list) and len(doc) == 1, f"{title}: not one play"
         assert doc[0].get("tasks"), f"{title}: no tasks"
         assert "CVE-2023-3390" in pb and "not model-authored" in pb
+        assert "__CVE__" not in pb, f"{title}: unsubstituted __CVE__ token"
+        all_pbs.append(pb)
     # action_type wins over misleading title keywords
     assert _resolve("openshift", "disable", "admission scale") == "os_scale"
     assert _resolve("rhel", "network", "SELinux firewall combo") == "rhel_firewalld"
+
+    # catalog_id selects a curated template directly for options that used to scaffold.
+    id_cases = ["rhel_service_restart", "rhel_systemd_harden", "rhel_openssh_harden",
+                "rhel_http_surface", "rhel_crypto_policy", "rhel_container_runtime",
+                "rhel_insights_remediation", "ocp_acs_policy"]
+    for cid in id_cases:
+        pb = build_playbook(platform="rhel", action_type="config", title=cid,
+                            steps=[], source_urls=["https://access.redhat.com/x"],
+                            cve="CVE-2024-6387", product="RHEL", version="9",
+                            catalog_id=cid)
+        doc = yaml.safe_load(pb)
+        assert isinstance(doc, list) and len(doc) == 1 and doc[0].get("tasks"), f"{cid}: bad play"
+        # must be the curated template, NOT the debug-only scaffold, with CVE substituted
+        assert "documented-steps scaffold" not in pb, f"{cid}: fell through to scaffold"
+        assert "ansible.builtin.debug" not in pb or cid == "rhel_crypto_policy", f"{cid}: debug-only"
+        assert "CVE-2024-6387" in pb and "__CVE__" not in pb, f"{cid}: CVE token"
+        all_pbs.append(pb)
+
     # scaffold must NOT leak a curated module; curated ones must NOT be a debug-only list
     sc = build_playbook(platform="other", action_type="x", title="z", steps=["a"],
                         source_urls=[], cve="CVE-2024-0001")
     assert "documented-steps scaffold" in sc
-    print("ok")
+    assert "CVE-2024-0001" in sc and "__CVE__" not in sc
+    all_pbs.append(sc)
+
+    # ansible-lint gate: every generated playbook must pass Ansible best-practice rules.
+    # Requires ansible-lint (dev/CI dep). Skips loudly if absent so plain `yaml`-only
+    # runs still work; CI installs it and enforces.
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    exe = shutil.which("ansible-lint")
+    if not exe:
+        print("ok (yaml checks passed; ansible-lint NOT installed — lint gate SKIPPED)")
+    else:
+        cfg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           ".ansible-lint")
+        with tempfile.TemporaryDirectory() as d:
+            for i, pb in enumerate(all_pbs):
+                with open(os.path.join(d, f"{i:02d}.yml"), "w") as fh:
+                    fh.write(pb)
+            cmd = [exe, "--profile", "production"]
+            if os.path.exists(cfg):
+                cmd += ["-c", cfg]
+            cmd.append(d)
+            r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            print(r.stdout + r.stderr)
+            raise SystemExit(f"ansible-lint gate FAILED ({len(all_pbs)} playbooks)")
+        print(f"ok (yaml + ansible-lint gate passed on {len(all_pbs)} playbooks)")

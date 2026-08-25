@@ -129,6 +129,12 @@ mitigations:
     applies_when: userspace service CVE, systemd, daemon
     scope: generic
     exclude_components: [kernel]
+    steps:
+      - "systemctl edit <unit> and add [Service] hardening: ProtectSystem=strict, NoNewPrivileges=yes, PrivateTmp=yes"
+      - Drop unneeded capabilities with CapabilityBoundingSet= for the unit
+      - systemctl daemon-reload
+      - systemctl restart <unit>
+      - systemd-analyze security <unit> (confirm the exposure score dropped)
     source_url: https://access.redhat.com/solutions/7032454
   - id: rhel_service_restart
     title: Restart only the affected service after a userspace fix lands
@@ -144,6 +150,11 @@ mitigations:
     scope: generic
     exclude_components: [kernel]
     fix_states: [Fixed, Affected]
+    steps:
+      - Confirm a fixed package version is available (dnf updateinfo info <advisory>)
+      - dnf update <package> (the fixed userspace package, not the kernel)
+      - systemctl restart <unit> (restart only the affected service)
+      - Verify the running process now uses the patched binary (e.g. sshd -V / rpm -q --last)
     source_url: https://access.redhat.com/security/vulnerabilities/
   - id: rhel_container_runtime
     title: Confine container runtime exposure on the host
@@ -157,6 +168,11 @@ mitigations:
     effort: 3
     applies_when: runc, crun, container runtime, host socket
     components: [runc]
+    steps:
+      - Restrict access to the runtime socket (e.g. chmod 660 and group-own /run/podman/podman.sock)
+      - Run workloads rootless / with a non-root runtime user where possible
+      - Drop unneeded capabilities and set no-new-privileges on affected containers
+      - Verify no untrusted tenant can reach the runtime API/socket
     source_url: https://access.redhat.com/solutions/41278
   - id: rhel_insights_remediation
     title: Apply an Insights / Ansible remediation playbook
@@ -170,6 +186,11 @@ mitigations:
     effort: 2
     applies_when: Insights remediation available, Ansible, fleet scale
     scope: generic
+    steps:
+      - In Red Hat Insights, open the advisory/CVE and check for a published remediation playbook
+      - Generate the remediation playbook for the affected systems
+      - Review the generated tasks, then run via Ansible Automation with --check first
+      - Apply to the fleet and confirm the CVE clears in Insights
     source_url: https://access.redhat.com/products/red-hat-insights/
   - id: rhel_http_surface
     title: Reduce web-server / HTTP attack surface
@@ -183,6 +204,11 @@ mitigations:
     effort: 2
     applies_when: httpd, nginx, HTTP/2, web tier, network-facing
     components: [httpd]
+    steps:
+      - Disable unused modules (e.g. comment out LoadModule lines for modules you do not serve)
+      - Turn off the vulnerable protocol/feature (e.g. Protocols h2 h2c -> HTTP/1.1 if HTTP/2 is affected)
+      - Bind TLS listeners to the intended interfaces only, not 0.0.0.0
+      - Validate config (httpd -t / nginx -t) then reload the web server
     source_url: https://access.redhat.com/solutions/962473
   - id: rhel_quarantine
     title: Quarantine affected hosts on a restricted VLAN / zone
@@ -213,6 +239,11 @@ mitigations:
     effort: 3
     applies_when: crypto, TLS algorithms, FIPS, crypto-policies
     components: [openssl]
+    steps:
+      - Check the current policy (update-crypto-policies --show)
+      - Raise it to refuse weak algorithms (update-crypto-policies --set FUTURE, or FIPS where required)
+      - Restart or reload TLS-using services so they pick up the new policy
+      - Confirm the vulnerable algorithm/protocol is now rejected (e.g. openssl s_client test)
     source_url: https://access.redhat.com/security/vulnerabilities/
   - id: rhel_vex_not_affected
     title: Confirm "not affected" via Red Hat VEX

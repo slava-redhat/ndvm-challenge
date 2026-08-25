@@ -129,6 +129,11 @@ mitigations:
     effort: 2
     applies_when: ACS, RHACS, image policy, admission
     scope: generic
+    steps:
+      - In RHACS, create or clone a policy matching the vulnerable image/CVE or privilege profile
+      - Set the policy lifecycle to Build and Deploy with enforcement enabled
+      - Verify a test deployment of the vulnerable image is now blocked
+      - Keep the policy until a fixed image is approved, then scope it down
     source_url: https://access.redhat.com/products/advanced-cluster-security-for-kubernetes/
   - id: ocp_default_deny
     title: Isolate the project with a tighter NetworkPolicy default-deny

@@ -1,0 +1,10 @@
+# Gate for NDVM-generated playbooks (see orchestrator/playbook.py self-check).
+# mock_modules lets syntax-check resolve FQCN modules from collections that need
+# not be installed just to lint — the curated templates that use them are fixed.
+profile: production
+mock_modules:
+  - ansible.posix.firewalld
+  - ansible.posix.selinux
+  - ansible.posix.seboolean
+  - kubernetes.core.k8s
+  - kubernetes.core.k8s_scale
