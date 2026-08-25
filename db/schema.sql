@@ -19,6 +19,10 @@ CREATE INDEX IF NOT EXISTS doc_chunk_platform_idx
 ALTER TABLE doc_chunk ADD COLUMN IF NOT EXISTS tsv tsvector
     GENERATED ALWAYS AS (to_tsvector('english', text)) STORED;
 CREATE INDEX IF NOT EXISTS doc_chunk_tsv_idx ON doc_chunk USING GIN (tsv);
+-- ponytail: prevent duplicate catalog_ids across mitigation chunks
+CREATE UNIQUE INDEX IF NOT EXISTS doc_chunk_catalog_id_uniq
+    ON doc_chunk ((metadata->>'catalog_id'))
+    WHERE metadata->>'doc_type' = 'mitigation' AND metadata->>'catalog_id' IS NOT NULL;
 
 -- Per-platform mitigation catalog (data-driven; "general" = add rows).
 CREATE TABLE IF NOT EXISTS mitigation (

@@ -37,6 +37,7 @@ from accounts import (account_view, default_cve, detect_account, estate_as_answe
 from cve_parse import filter_rag_hits_for_cve, find_cves, prefer_mitigation_hits, valid_cve
 from catalog import (catalog_context, filter_applicable_hits, materialize_options,
                      pin_options_to_catalog)
+from control_matrix import validate_control
 from llm import get_llm
 import progress
 from playbook import build_playbook
@@ -519,6 +520,17 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
         control_report: ControlReport = _require_pydantic(
             fv.result(timeout=_WAVE_TIMEOUT), "validator")
         strategy = fs.result(timeout=_WAVE_TIMEOUT).raw
+
+    # ponytail: enforce control matrix floor — LLM can't upgrade past the matrix verdict
+    _STATUS_RANK = {"not_mitigated": 0, "unknown": 0, "partial": 1, "mitigated": 2}
+    cve_desc = f"{pinned.rationale} {pinned.cve_id} {pinned.threat_severity}"
+    for ctrl in control_report.controls:
+        mv = validate_control(ctrl.control, cve_desc)
+        if mv["verdict"] is not None:
+            if _STATUS_RANK.get(ctrl.status, 0) > _STATUS_RANK[mv["verdict"]]:
+                old = ctrl.status
+                ctrl.status = mv["verdict"]
+                ctrl.rationale = f'{mv["rationale"]} (LLM said "{old}"; matrix floor applied)'
     _tB = time.time()
 
     # ---- Wave C: synth (narrative only — vulnerability overwritten from pinned)

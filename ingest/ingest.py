@@ -100,6 +100,20 @@ def chunk(text, size=1200, overlap=150):
 
 
 def load_mitigations(cur):
+    # ponytail: fail-fast on duplicate catalog_ids across all YAML files
+    global_ids: dict[str, str] = {}
+    for path in sorted(glob.glob(f"{DATA}/mitigations/*.yaml")):
+        doc = yaml.safe_load(open(path, "rb").read())
+        src = os.path.basename(path)
+        for m in doc.get("mitigations") or []:
+            cid = (m.get("id") or "").strip()
+            if cid and cid in global_ids:
+                raise ValueError(
+                    f"Duplicate catalog_id '{cid}' in {src} "
+                    f"(first seen in {global_ids[cid]})")
+            if cid:
+                global_ids[cid] = src
+
     for path in sorted(glob.glob(f"{DATA}/mitigations/*.yaml")):
         raw = open(path, "rb").read()
         src, digest = os.path.basename(path), sha(raw)
