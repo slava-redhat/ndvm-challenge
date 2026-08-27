@@ -27,7 +27,7 @@ services:
       db:
         condition: service_healthy
     extra_hosts:
-      - "host.containers.internal:host-gateway"   # reach host Ollama (GPU)
+      - "host.containers.internal:host-gateway"   # reach host Ollama (GPU); no LAN/VPN IP required
     volumes:
       - ./data:/app/data:ro,Z
     restart: "no"        # one-shot job
@@ -43,7 +43,7 @@ services:
       db:
         condition: service_healthy
     extra_hosts:
-      - "host.containers.internal:host-gateway"   # reach host Ollama (GPU)
+      - "host.containers.internal:host-gateway"   # reach host Ollama (GPU); no LAN/VPN IP required
     userns_mode: "keep-id:uid=1000,gid=1000"
     ports:
       - "8000:8000"

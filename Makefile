@@ -1,4 +1,4 @@
-.PHONY: help up down logs ingest reingest stats sources pdfs health test clean vector-db-backup vector-db-restore
+.PHONY: help up ollama-check down logs ingest reingest stats sources pdfs health test clean vector-db-backup vector-db-restore
 
 # Bare `make` shows help. (`make -h`/`--help` are GNU make's own flags and print
 # make's usage — they can't be overridden by a target; use `make` or `make help`.)
@@ -7,6 +7,10 @@
 # .env supplies POSTGRES_USER/DB; fall back to the defaults in .env.example.
 POSTGRES_USER ?= ndvm
 POSTGRES_DB   ?= ndvm
+# Podman maps host.containers.internal to its stable host-gateway address. Do not
+# replace it with a LAN/VPN address: rootless containers cannot necessarily route
+# back to that address even when the host itself can.
+OLLAMA_LOCAL_URL ?= http://127.0.0.1:11434
 DC = podman-compose --env-file .env
 VECTOR_DB_BACKUP ?= gcp/backups/ndvm-vector.sql.gz
 
@@ -14,8 +18,22 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 	  awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-10s\033[0m %s\n",$$1,$$2}'
 
-up: ## Build + start the full stack (db, orchestrator, ui)
+up: ollama-check ## Build + start the full stack (db, orchestrator, ui)
 	$(DC) up -d --build
+	@$(DC) exec -T orchestrator python3 -c 'import os, requests; response = requests.get(os.environ["OLLAMA_HOST"] + "/api/version", timeout=5); response.raise_for_status(); print("Container Ollama check: ready (" + response.json()["version"] + ")")'
+
+ollama-check: ## Verify local Ollama before starting containers
+	@printf 'Checking host Ollama at %s... ' "$(OLLAMA_LOCAL_URL)"
+	@if curl --noproxy '*' --fail --silent --show-error --connect-timeout 3 --max-time 10 \
+		"$(OLLAMA_LOCAL_URL)/api/version" >/dev/null; then \
+		echo "ready"; \
+	else \
+		echo "unreachable"; \
+		echo "Start Ollama on all interfaces, then retry:"; \
+		echo "  systemctl --user set-environment OLLAMA_HOST=0.0.0.0:11434"; \
+		echo "  systemctl --user restart ollama"; \
+		exit 1; \
+	fi
 
 down: ## Stop the stack (keeps the data volume)
 	$(DC) down

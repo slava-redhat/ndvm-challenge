@@ -88,9 +88,12 @@ Vulkan, reached at `host.containers.internal:11434` — no ollama container.
 cp .env.example .env
 # edit .env: set Vertex project/model values, then copy ADC credentials to the repo.
 cp ~/.config/gcloud/application_default_credentials.json .application_default_credentials.json
-podman compose --env-file .env up --build
+make up
 ```
-`ingest` runs once and exits (it pulls the embed model + loads the corpus). Then open:
+`make up` uses Podman's stable host gateway rather than a LAN/VPN address, checks
+that local Ollama is reachable before starting, then verifies it again from the
+orchestrator container. `ingest` runs once and exits (it pulls the embed model +
+loads the corpus). Then open:
 - UI: http://localhost:8501
 - API: http://localhost:8000/health
 
