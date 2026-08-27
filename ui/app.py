@@ -350,7 +350,17 @@ def report_pdf(intake: dict, advice: dict, account: dict | None = None) -> bytes
     return bytes(pdf.output())
 
 
-st.set_page_config(page_title="NDVM — Non-Disruptive Vulnerability Mitigation", page_icon="🛡️")
+st.set_page_config(
+    page_title="NDVM — Non-Disruptive Vulnerability Mitigation",
+    page_icon="🛡️",
+    # Override the menu → About dialog, which otherwise reads "Made with Streamlit".
+    menu_items={"About": "NDVM — Non-Disruptive Vulnerability Mitigation"},
+)
+# Hide the "Made with Streamlit" / "Hosted with Streamlit" footer badge.
+st.markdown(
+    "<style>footer {visibility: hidden;}</style>",
+    unsafe_allow_html=True,
+)
 st.title("🛡️ Non-Disruptive Vulnerability Mitigation")
 st.caption("Can't patch right now? Describe your environment and the CVE — get trusted, "
            "personalized options grounded in Red Hat security data.")

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ui-streamlit-config
+  namespace: ${NAMESPACE}
+data:
+  # Mirrors ui/.streamlit/config.toml (also baked into the image). Mounted over
+  # /app/.streamlit so the theme applies even when the running image predates the
+  # config file. Keep in sync with ui/.streamlit/config.toml. Avoid the dollar-sign
+  # character anywhere in this file — gke.py renders manifests through
+  # string.Template.substitute, which treats it as a variable placeholder.
+  config.toml: |
+    [theme]
+    base = "dark"
+
+    [browser]
+    gatherUsageStats = false

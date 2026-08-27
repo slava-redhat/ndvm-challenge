@@ -27,6 +27,10 @@ spec:
           env:
             - name: ORCHESTRATOR_URL
               value: http://orchestrator:8000
+          volumeMounts:
+            - name: streamlit-config
+              mountPath: /app/.streamlit
+              readOnly: true
           resources:
             requests:
               cpu: ${UI_CPU_REQUEST}
@@ -46,3 +50,7 @@ spec:
               port: 8501
             initialDelaySeconds: 30
             periodSeconds: 15
+      volumes:
+        - name: streamlit-config
+          configMap:
+            name: ui-streamlit-config

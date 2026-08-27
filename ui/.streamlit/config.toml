@@ -1,0 +1,10 @@
+# Force a fixed dark theme so every origin renders dark regardless of the browser's
+# stored per-origin preference. Needed for the GKE deployment, which exposes no theme
+# menu — without this the ingress URL falls back to the visitor's system preference.
+[theme]
+base = "dark"
+
+[browser]
+# Disable anonymous usage stats — the container HOME is read-only, so the telemetry
+# machine-id write throws a (harmless) PermissionError traceback on every session.
+gatherUsageStats = false
