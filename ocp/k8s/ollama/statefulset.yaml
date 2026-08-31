@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ollama
+  namespace: ${NAMESPACE}
+spec:
+  serviceName: ollama
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      serviceAccountName: ndvm
+      # NOTE: ollama/ollama runs as root by default and writes to
+      # /root/.ollama; it needs the same "anyuid" SCC grant as postgres
+      # (see ocp/k8s/serviceaccount-scc-anyuid.md).
+      containers:
+        - name: ollama
+          image: ollama/ollama:0.12.10
+          ports:
+            - name: ollama
+              containerPort: 11434
+          env:
+            - name: OLLAMA_EMBED_MODEL
+              value: nomic-embed-text
+          command: ["sh", "-c"]
+          args:
+            - |
+              ollama serve &
+              server_pid=$$!
+              trap 'kill -TERM "$$server_pid"; wait "$$server_pid"' TERM INT
+              until ollama list >/dev/null 2>&1; do sleep 1; done
+              ollama pull "$$OLLAMA_EMBED_MODEL"
+              wait "$$server_pid"
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+          resources:
+            requests:
+              cpu: ${OLLAMA_CPU_REQUEST}
+              memory: ${OLLAMA_MEMORY_REQUEST}
+            limits:
+              cpu: ${OLLAMA_CPU_LIMIT}
+              memory: ${OLLAMA_MEMORY_LIMIT}
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "ollama show \"$$OLLAMA_EMBED_MODEL\" >/dev/null 2>&1"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /api/tags
+              port: ollama
+            initialDelaySeconds: 30
+            periodSeconds: 15
+  volumeClaimTemplates:
+    - metadata:
+        name: ollama-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: ${OLLAMA_STORAGE}

@@ -1,0 +1,121 @@
+# OpenShift Route replaces the GKE nginx Ingress. Route path matching is
+# prefix-based (no distinction between Exact/Prefix like Ingress), so each
+# distinct orchestrator path gets its own Route object; the router picks the
+# most specific path match automatically, so "/" for the UI still only
+# applies when none of the more specific paths match.
+#
+# host defaults to the cluster's routing subdomain
+# (<name>-<namespace>.apps.<cluster-domain>) unless HOST is overridden.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ndvm-ui
+  namespace: ${NAMESPACE}
+spec:
+  host: ${ROUTE_HOST}
+  path: /
+  to:
+    kind: Service
+    name: ui
+  port:
+    targetPort: 8501
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ndvm-health
+  namespace: ${NAMESPACE}
+  annotations:
+    haproxy.router.openshift.io/timeout: 600s
+spec:
+  host: ${ROUTE_HOST}
+  path: /health
+  to:
+    kind: Service
+    name: orchestrator
+  port:
+    targetPort: 8000
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ndvm-accounts
+  namespace: ${NAMESPACE}
+  annotations:
+    haproxy.router.openshift.io/timeout: 600s
+spec:
+  host: ${ROUTE_HOST}
+  path: /accounts
+  to:
+    kind: Service
+    name: orchestrator
+  port:
+    targetPort: 8000
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ndvm-triage
+  namespace: ${NAMESPACE}
+  annotations:
+    haproxy.router.openshift.io/timeout: 600s
+spec:
+  host: ${ROUTE_HOST}
+  path: /triage
+  to:
+    kind: Service
+    name: orchestrator
+  port:
+    targetPort: 8000
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ndvm-advise
+  namespace: ${NAMESPACE}
+  annotations:
+    haproxy.router.openshift.io/timeout: 600s
+spec:
+  host: ${ROUTE_HOST}
+  path: /advise
+  to:
+    kind: Service
+    name: orchestrator
+  port:
+    targetPort: 8000
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ndvm-advise-stream
+  namespace: ${NAMESPACE}
+  annotations:
+    haproxy.router.openshift.io/timeout: 600s
+    # SSE/streaming responses need buffering disabled on the router.
+    haproxy.router.openshift.io/disable_cookies: "true"
+spec:
+  host: ${ROUTE_HOST}
+  path: /advise_stream
+  to:
+    kind: Service
+    name: orchestrator
+  port:
+    targetPort: 8000
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

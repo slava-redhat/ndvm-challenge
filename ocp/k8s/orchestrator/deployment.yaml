@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  namespace: ${NAMESPACE}
+  annotations:
+    # OpenShift image-trigger: redeploy automatically whenever a new image is
+    # pushed to the orchestrator:${TAG} ImageStreamTag (e.g. after
+    # `oc start-build orchestrator`). Replaces GKE's `kubectl rollout restart`.
+    image.openshift.io/triggers: |
+      [{"from":{"kind":"ImageStreamTag","name":"orchestrator:${TAG}"},"fieldPath":"spec.template.spec.containers[?(@.name==\"orchestrator\")].image","paused":false}]
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator
+  template:
+    metadata:
+      labels:
+        app: orchestrator
+    spec:
+      serviceAccountName: ndvm
+      # No fixed runAsUser/fsGroup here: OpenShift's "restricted" SCC assigns
+      # an arbitrary non-root UID (and matching fsGroup) from the project's
+      # allocated range automatically. The orchestrator image already runs as
+      # a non-root "app" user, so this is compatible without an SCC grant.
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: orchestrator
+          # Placeholder tag; the image.openshift.io/triggers annotation above
+          # rewrites this to the real internal-registry pullspec after build.
+          image: image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/orchestrator:${TAG}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: ndvm-secrets
+          env:
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: "5432"
+            - name: OLLAMA_HOST
+              value: http://ollama:11434
+            - name: OLLAMA_EMBED_MODEL
+              value: nomic-embed-text
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /gcloud/application_default_credentials.json
+          volumeMounts:
+            - name: google-credentials
+              mountPath: /gcloud
+              readOnly: true
+            - name: account-data
+              mountPath: /app/data/accounts
+              readOnly: true
+          resources:
+            requests:
+              cpu: ${ORCHESTRATOR_CPU_REQUEST}
+              memory: ${ORCHESTRATOR_MEMORY_REQUEST}
+            limits:
+              cpu: ${ORCHESTRATOR_CPU_LIMIT}
+              memory: ${ORCHESTRATOR_MEMORY_LIMIT}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+      volumes:
+        # Optional: only needed when NDVM_LLM_PROVIDER=vertex (default). If
+        # this trial project uses the OpenAI tier instead (see
+        # orchestrator/llm.py), the secret can be left absent — `optional:
+        # true` means the pod still starts with an empty /gcloud dir.
+        - name: google-credentials
+          secret:
+            secretName: ndvm-google-credentials
+            optional: true
+        - name: account-data
+          configMap:
+            name: ndvm-account-data

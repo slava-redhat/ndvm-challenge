@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ui
+  namespace: ${NAMESPACE}
+  annotations:
+    image.openshift.io/triggers: |
+      [{"from":{"kind":"ImageStreamTag","name":"ui:${TAG}"},"fieldPath":"spec.template.spec.containers[?(@.name==\"ui\")].image","paused":false}]
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ui
+  template:
+    metadata:
+      labels:
+        app: ui
+    spec:
+      serviceAccountName: ndvm
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: ui
+          image: image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/ui:${TAG}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8501
+          env:
+            - name: ORCHESTRATOR_URL
+              value: http://orchestrator:8000
+            # ui/Dockerfile doesn't declare a non-root USER, so under
+            # OpenShift's arbitrary assigned UID there is no $$HOME by
+            # default; Streamlit needs a writable one for its runtime state.
+            - name: HOME
+              value: /tmp
+          volumeMounts:
+            - name: streamlit-config
+              mountPath: /app/.streamlit
+              readOnly: true
+          resources:
+            requests:
+              cpu: ${UI_CPU_REQUEST}
+              memory: ${UI_MEMORY_REQUEST}
+            limits:
+              cpu: ${UI_CPU_LIMIT}
+              memory: ${UI_MEMORY_LIMIT}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8501
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8501
+            initialDelaySeconds: 30
+            periodSeconds: 15
+      volumes:
+        - name: streamlit-config
+          configMap:
+            name: ui-streamlit-config

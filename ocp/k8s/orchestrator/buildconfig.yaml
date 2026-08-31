@@ -1,0 +1,19 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: orchestrator
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: orchestrator:${TAG}
+  # Binary build: source is pushed at build time via
+  # `oc start-build orchestrator --from-dir=orchestrator --follow`
+  # (see ocp/openshift.py). No git webhook/trigger is configured.
