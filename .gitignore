@@ -6,7 +6,6 @@ __pycache__/
 *.pyc
 data/pdfs/*.pdf
 .venv/
-.claude/
 gcp/backups/*.sql.gz
 
 # docs excluded from this repo (design narrative kept locally)
@@ -14,3 +13,8 @@ docs/
 pptx/
 video/
 jupyter/
+
+# local editor / git tooling (keep on disk, never commit)
+.claude/
+.cursor/
+.githooks/

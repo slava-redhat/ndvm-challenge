@@ -1,205 +1,261 @@
 <mxfile host="app.diagrams.net">
   <diagram id="ndvm-po-flow" name="Platform Owner Flow">
-    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="2400" math="0" shadow="0">
+    <mxGraphModel dx="4040" dy="2466" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="2400" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-
-        <!-- ===== LEGEND ===== -->
-        <mxCell id="leg" value="Legend" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;verticalAlign=top;fontStyle=1;align=left;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
-          <mxGeometry x="980" y="1780" width="360" height="170" as="geometry" />
+        <mxCell id="leg" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;verticalAlign=top;fontStyle=1;align=left;spacingLeft=8;spacingTop=6;" value="Legend" vertex="1">
+          <mxGeometry height="170" width="360" x="980" y="1780" as="geometry" />
         </mxCell>
-        <mxCell id="leg1" value="Streamlit UI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="leg"><mxGeometry x="14" y="32" width="100" height="26" as="geometry"/></mxCell>
-        <mxCell id="leg2" value="FastAPI orchestrator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="leg"><mxGeometry x="124" y="32" width="130" height="26" as="geometry"/></mxCell>
-        <mxCell id="leg3" value="Flow control" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="leg"><mxGeometry x="264" y="32" width="86" height="26" as="geometry"/></mxCell>
-        <mxCell id="leg4" value="LLM agent (Vertex Claude)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="leg"><mxGeometry x="14" y="66" width="150" height="26" as="geometry"/></mxCell>
-        <mxCell id="leg5" value="Python (deterministic)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" vertex="1" parent="leg"><mxGeometry x="174" y="66" width="140" height="26" as="geometry"/></mxCell>
-        <mxCell id="leg6" value="Decision" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="leg"><mxGeometry x="14" y="106" width="90" height="26" as="geometry"/></mxCell>
-        <mxCell id="leg7" value="Data source / feed" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="leg"><mxGeometry x="114" y="104" width="120" height="30" as="geometry"/></mxCell>
-        <mxCell id="leg8" value="Fail-closed / refuse" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="leg"><mxGeometry x="244" y="106" width="106" height="26" as="geometry"/></mxCell>
-
-        <!-- ===== LLM node (left rail) ===== -->
-        <mxCell id="llm" value="Vertex AI — Claude&#10;Sonnet 4.5 (reason) / Haiku 4.5 (fast)&#10;orchestrator/llm.py&#10;&#10;LLM only routes, judges,&#10;ranks &amp; narrates — never owns facts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;dashed=1;align=center;" vertex="1" parent="1">
-          <mxGeometry x="20" y="440" width="210" height="1360" as="geometry" />
+        <mxCell id="leg1" parent="leg" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="Streamlit UI" vertex="1">
+          <mxGeometry height="26" width="100" x="14" y="32" as="geometry" />
         </mxCell>
-
-        <!-- ===== MAIN SPINE ===== -->
-        <mxCell id="n1" value="Platform Owner&#10;(Customer)" style="ellipse;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="440" y="40" width="300" height="60" as="geometry" />
+        <mxCell id="leg2" parent="leg" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" value="FastAPI orchestrator" vertex="1">
+          <mxGeometry height="26" width="130" x="124" y="32" as="geometry" />
         </mxCell>
-        <mxCell id="n2" value="Streamlit UI  —  ui/app.py&#10;persona = &quot;Platform owner&quot; (primary)&#10;free-text &quot;Your situation&quot; → &quot;Get mitigation options&quot;&#10;render_advice() shows the final answer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
-          <mxGeometry x="440" y="130" width="300" height="80" as="geometry" />
+        <mxCell id="leg3" parent="leg" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" value="Flow control" vertex="1">
+          <mxGeometry height="26" width="86" x="264" y="32" as="geometry" />
         </mxCell>
-        <mxCell id="n3" value="FastAPI  —  orchestrator/main.py&#10;POST /advise_stream (semaphore + worker thread)&#10;progress.emit → NDJSON step events; _persist → recommendation table" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
-          <mxGeometry x="440" y="240" width="300" height="80" as="geometry" />
+        <mxCell id="leg4" parent="leg" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="LLM agent (Vertex Claude)" vertex="1">
+          <mxGeometry height="26" width="150" x="14" y="66" as="geometry" />
         </mxCell>
-        <mxCell id="n4" value="NDVMFlow.triage  (@start)  —  orchestrator/crew.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
-          <mxGeometry x="440" y="350" width="300" height="50" as="geometry" />
+        <mxCell id="leg5" parent="leg" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" value="Python (deterministic)" vertex="1">
+          <mxGeometry height="26" width="140" x="174" y="66" as="geometry" />
         </mxCell>
-        <mxCell id="n5" value="Router Agent (LLM / Haiku)  —  run_router&#10;→ Intake {on_topic, persona, platform, product, version, cve, constraint}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
-          <mxGeometry x="440" y="435" width="300" height="70" as="geometry" />
+        <mxCell id="leg6" parent="leg" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="Decision" vertex="1">
+          <mxGeometry height="26" width="90" x="14" y="106" as="geometry" />
         </mxCell>
-        <mxCell id="d1" value="On-topic?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
-          <mxGeometry x="520" y="545" width="140" height="80" as="geometry" />
+        <mxCell id="leg7" parent="leg" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=middle;" value="Data source / feed" vertex="1">
+          <mxGeometry height="36" width="120" x="114" y="100" as="geometry" />
         </mxCell>
-        <mxCell id="n6" value="Sufficiency Gate (LLM)  —  run_gate&#10;&quot;Environment Sufficiency Judge&quot;  (skipped if force=true)&#10;multi-CVE radio guard first (deterministic) → Python sanitizers" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
-          <mxGeometry x="440" y="665" width="300" height="80" as="geometry" />
+        <mxCell id="leg8" parent="leg" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" value="Fail-closed / refuse" vertex="1">
+          <mxGeometry height="26" width="106" x="244" y="106" as="geometry" />
         </mxCell>
-        <mxCell id="d2" value="Enough info?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
-          <mxGeometry x="510" y="785" width="160" height="90" as="geometry" />
+        <mxCell id="llm" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;dashed=1;align=center;" value="Vertex AI — Claude&#xa;Sonnet 4.5 (reason) / Haiku 4.5 (fast)&#xa;orchestrator/llm.py&#xa;&#xa;LLM only routes, judges,&#xa;ranks &amp; narrates — never owns facts" vertex="1">
+          <mxGeometry height="1360" width="210" x="20" y="440" as="geometry" />
         </mxCell>
-        <mxCell id="n7" value="@router route → persona=primary → primary_flow → run_advice()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
-          <mxGeometry x="440" y="925" width="300" height="50" as="geometry" />
+        <mxCell id="n1" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;" value="Platform Owner&#xa;(Customer)" vertex="1">
+          <mxGeometry height="60" width="300" x="440" y="40" as="geometry" />
         </mxCell>
-        <mxCell id="n8" value="CVE pinning&#10;(if no CVE named) Researcher Agent + RedHatCveSearchTool&#10;→ pinned CVE  (else need_cve → fail-closed)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
-          <mxGeometry x="440" y="1015" width="300" height="75" as="geometry" />
+        <mxCell id="n2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="Streamlit UI  —  ui/app.py&#xa;persona = &quot;Platform owner&quot; (primary)&#xa;free-text &quot;Your situation&quot; → &quot;Get mitigation options&quot;&#xa;render_advice() shows the final answer" vertex="1">
+          <mxGeometry height="80" width="300" x="440" y="130" as="geometry" />
         </mxCell>
-        <mxCell id="n9" value="priority.assess → tier  (Python)&#10;+ apply_ssvc_context → SSVC decision (Table 9)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" vertex="1" parent="1">
-          <mxGeometry x="440" y="1130" width="300" height="70" as="geometry" />
+        <mxCell id="n3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" value="FastAPI  —  orchestrator/main.py&#xa;POST /advise_stream (semaphore + worker thread)&#xa;progress.emit → NDJSON step events; _persist → recommendation table" vertex="1">
+          <mxGeometry height="80" width="300" x="440" y="240" as="geometry" />
         </mxCell>
-
-        <!-- ===== WAVE A ===== -->
-        <mxCell id="waveA" value="WAVE A — Ground facts + RAG retrieval  (3 threads)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;verticalAlign=top;fontStyle=1;spacingTop=6;" vertex="1" parent="1">
-          <mxGeometry x="330" y="1250" width="560" height="200" as="geometry" />
+        <mxCell id="n4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" value="NDVMFlow.triage  (@start)  —  orchestrator/crew.py" vertex="1">
+          <mxGeometry height="50" width="300" x="440" y="350" as="geometry" />
         </mxCell>
-        <mxCell id="a1" value="lookup_vuln_finding → VulnFinding&#10;(Red Hat Security Data — pinned facts)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" vertex="1" parent="waveA">
-          <mxGeometry x="20" y="40" width="250" height="60" as="geometry" />
+        <mxCell id="n5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="Router Agent (LLM / Haiku)  —  run_router&#xa;→ Intake {on_topic, persona, platform, product, version, cve, constraint}" vertex="1">
+          <mxGeometry height="70" width="300" x="440" y="435" as="geometry" />
         </mxCell>
-        <mxCell id="a2" value="rag_search_hybrid &quot;mitigation&quot;&#10;pgvector + FTS fused by RRF" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" vertex="1" parent="waveA">
-          <mxGeometry x="290" y="40" width="250" height="60" as="geometry" />
+        <mxCell id="d1" parent="1" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="On-topic?" vertex="1">
+          <mxGeometry height="80" width="140" x="520" y="545" as="geometry" />
         </mxCell>
-        <mxCell id="a3" value="rag_search_hybrid &quot;pdf&quot;&#10;(hardening evidence — validator context)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" vertex="1" parent="waveA">
-          <mxGeometry x="20" y="115" width="250" height="60" as="geometry" />
+        <mxCell id="n6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="Sufficiency Gate (LLM)  —  run_gate&#xa;&quot;Environment Sufficiency Judge&quot;  (skipped if force=true)&#xa;multi-CVE radio guard first (deterministic) → Python sanitizers" vertex="1">
+          <mxGeometry height="80" width="300" x="440" y="665" as="geometry" />
         </mxCell>
-        <mxCell id="a4" value="filter_applicable_hits → materialize_options&#10;→ MitigationOption[]  (fail-closed)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" vertex="1" parent="waveA">
-          <mxGeometry x="290" y="115" width="250" height="60" as="geometry" />
+        <mxCell id="d2" parent="1" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="Enough info?" vertex="1">
+          <mxGeometry height="90" width="160" x="510" y="785" as="geometry" />
         </mxCell>
-
-        <!-- ===== WAVE B ===== -->
-        <mxCell id="waveB" value="WAVE B — Judge controls + rank  (2 threads)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;verticalAlign=top;fontStyle=1;spacingTop=6;" vertex="1" parent="1">
-          <mxGeometry x="330" y="1500" width="560" height="180" as="geometry" />
+        <mxCell id="n7" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" value="@router route → persona=primary → primary_flow → run_advice()" vertex="1">
+          <mxGeometry height="50" width="300" x="440" y="925" as="geometry" />
         </mxCell>
-        <mxCell id="b1" value="Compensating Control Validator (LLM)&#10;→ ControlReport {mitigated / partial / not / unknown}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="waveB">
-          <mxGeometry x="20" y="40" width="260" height="55" as="geometry" />
+        <mxCell id="n8" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="CVE pinning&#xa;(if no CVE named) Researcher Agent + RedHatCveSearchTool&#xa;→ pinned CVE  (else need_cve → fail-closed)" vertex="1">
+          <mxGeometry height="75" width="300" x="440" y="1015" as="geometry" />
         </mxCell>
-        <mxCell id="b2" value="control_matrix.validate_control&#10;deterministic FLOOR — caps the LLM verdict" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" vertex="1" parent="waveB">
-          <mxGeometry x="20" y="108" width="260" height="55" as="geometry" />
+        <mxCell id="n9" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" value="priority.assess → tier  (Python)&#xa;+ apply_ssvc_context → SSVC decision (Table 9)" vertex="1">
+          <mxGeometry height="70" width="300" x="440" y="1130" as="geometry" />
         </mxCell>
-        <mxCell id="b3" value="Risk &amp; Trade-off Strategist (LLM)&#10;→ ranked catalog_id list (allow-list only)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="waveB">
-          <mxGeometry x="300" y="72" width="240" height="60" as="geometry" />
+        <mxCell id="waveA" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;verticalAlign=top;fontStyle=1;spacingTop=6;" value="WAVE A — Ground facts + RAG retrieval  (3 threads)" vertex="1">
+          <mxGeometry height="200" width="560" x="330" y="1250" as="geometry" />
         </mxCell>
-
-        <!-- ===== WAVE C ===== -->
-        <mxCell id="waveC" value="WAVE C — Synthesize" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;verticalAlign=top;fontStyle=1;spacingTop=6;" vertex="1" parent="1">
-          <mxGeometry x="330" y="1710" width="560" height="110" as="geometry" />
+        <mxCell id="a1" parent="waveA" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" value="lookup_vuln_finding → VulnFinding&#xa;(Red Hat Security Data — pinned facts)" vertex="1">
+          <mxGeometry height="60" width="250" x="20" y="40" as="geometry" />
         </mxCell>
-        <mxCell id="c1" value="Customer Mitigation Advisor (LLM / fast)&#10;→ AdviceResult (environment_summary, business_risk,&#10;options ⊆ allow-list, explanation) — copies pinned vuln verbatim" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="waveC">
-          <mxGeometry x="90" y="38" width="380" height="62" as="geometry" />
+        <mxCell id="a2" parent="waveA" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" value="rag_search_hybrid &quot;mitigation&quot;&#xa;pgvector + FTS fused by RRF" vertex="1">
+          <mxGeometry height="60" width="250" x="290" y="40" as="geometry" />
         </mxCell>
-
-        <!-- ===== TRUST-SPINE ===== -->
-        <mxCell id="ts" value="TRUST-SPINE OVERWRITE  (Python — facts win over LLM)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;verticalAlign=top;fontStyle=1;spacingTop=6;" vertex="1" parent="1">
-          <mxGeometry x="330" y="1870" width="560" height="230" as="geometry" />
+        <mxCell id="a3" parent="waveA" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" value="rag_search_hybrid &quot;pdf&quot;&#xa;(hardening evidence — validator context)" vertex="1">
+          <mxGeometry height="60" width="250" x="20" y="115" as="geometry" />
         </mxCell>
-        <mxCell id="t1" value="vulnerability = pinned" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" vertex="1" parent="ts">
-          <mxGeometry x="20" y="42" width="250" height="46" as="geometry" />
+        <mxCell id="a4" parent="waveA" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" value="filter_applicable_hits → materialize_options&#xa;→ MitigationOption[]  (fail-closed)" vertex="1">
+          <mxGeometry height="60" width="250" x="290" y="115" as="geometry" />
         </mxCell>
-        <mxCell id="t2" value="pin_options_to_catalog (drop invented)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" vertex="1" parent="ts">
-          <mxGeometry x="290" y="42" width="250" height="46" as="geometry" />
+        <mxCell id="waveB" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;verticalAlign=top;fontStyle=1;spacingTop=6;" value="WAVE B — Judge controls + rank  (2 threads)" vertex="1">
+          <mxGeometry height="180" width="560" x="330" y="1500" as="geometry" />
         </mxCell>
-        <mxCell id="t3" value="recompute tier / SSVC (+ compliance)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" vertex="1" parent="ts">
-          <mxGeometry x="20" y="100" width="250" height="46" as="geometry" />
+        <mxCell id="b1" parent="waveB" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="Compensating Control Validator (LLM)&#xa;→ ControlReport {mitigated / partial / not / unknown}" vertex="1">
+          <mxGeometry height="55" width="260" x="20" y="40" as="geometry" />
         </mxCell>
-        <mxCell id="t4" value="rank_options → recommended (disruption-weighted)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" vertex="1" parent="ts">
-          <mxGeometry x="290" y="100" width="250" height="46" as="geometry" />
+        <mxCell id="b2" parent="waveB" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" value="control_matrix.validate_control&#xa;deterministic FLOOR — caps the LLM verdict" vertex="1">
+          <mxGeometry height="55" width="260" x="20" y="108" as="geometry" />
         </mxCell>
-        <mxCell id="t5" value="build_playbook → Ansible (+ ansible-lint gate)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" vertex="1" parent="ts">
-          <mxGeometry x="20" y="160" width="250" height="46" as="geometry" />
+        <mxCell id="b3" parent="waveB" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="Risk &amp; Trade-off Strategist (LLM)&#xa;→ ranked catalog_id list (allow-list only)" vertex="1">
+          <mxGeometry height="60" width="240" x="300" y="72" as="geometry" />
         </mxCell>
-        <mxCell id="t6" value="build_decision_package + _audit_trail" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" vertex="1" parent="ts">
-          <mxGeometry x="290" y="160" width="250" height="46" as="geometry" />
+        <mxCell id="waveC" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;verticalAlign=top;fontStyle=1;spacingTop=6;" value="WAVE C — Synthesize" vertex="1">
+          <mxGeometry height="110" width="560" x="330" y="1710" as="geometry" />
         </mxCell>
-
-        <!-- ===== RESULT + FINAL ===== -->
-        <mxCell id="res" value="Result: {status:ok, intake, advice{...}, account:null}&#10;→ _persist to recommendation table → NDJSON &quot;result&quot; event" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
-          <mxGeometry x="440" y="2140" width="300" height="70" as="geometry" />
+        <mxCell id="c1" parent="waveC" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="Customer Mitigation Advisor (LLM / fast)&#xa;→ AdviceResult (environment_summary, business_risk,&#xa;options ⊆ allow-list, explanation) — copies pinned vuln verbatim" vertex="1">
+          <mxGeometry height="62" width="380" x="90" y="38" as="geometry" />
         </mxCell>
-        <mxCell id="fin" value="Streamlit render_advice()  =  FINAL ANSWER&#10;vuln card · KEV/EPSS/SSVC priority · controls you have ·&#10;decision package (residual before/after) · business risk ·&#10;ranked options (⭐ recommended) · Ansible playbook · export · audit trail" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="410" y="2250" width="360" height="110" as="geometry" />
+        <mxCell id="ts" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;verticalAlign=top;fontStyle=1;spacingTop=6;" value="TRUST-SPINE OVERWRITE  (Python — facts win over LLM)" vertex="1">
+          <mxGeometry height="230" width="560" x="330" y="1870" as="geometry" />
         </mxCell>
-
-        <!-- ===== BRANCH / TERMINAL NODES ===== -->
-        <mxCell id="refuse" value="Refuse&#10;{status: off_topic}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
-          <mxGeometry x="820" y="550" width="180" height="60" as="geometry" />
+        <mxCell id="t1" parent="ts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" value="vulnerability = pinned" vertex="1">
+          <mxGeometry height="46" width="250" x="20" y="42" as="geometry" />
         </mxCell>
-        <mxCell id="needinfo" value="{status: need_info, questions[...]}&#10;UI renders questionnaire (≤4 closed-choice Qs)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
-          <mxGeometry x="820" y="790" width="260" height="80" as="geometry" />
+        <mxCell id="t2" parent="ts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" value="pin_options_to_catalog (drop invented)" vertex="1">
+          <mxGeometry height="46" width="250" x="290" y="42" as="geometry" />
         </mxCell>
-        <mxCell id="failclosed" value="Fail-closed response&#10;need_cve · knowledge_base_unavailable&#10;(RAG down / no applicable catalog option)&#10;— never invents a fix" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
-          <mxGeometry x="980" y="1290" width="300" height="90" as="geometry" />
+        <mxCell id="t3" parent="ts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" value="recompute tier / SSVC (+ compliance)" vertex="1">
+          <mxGeometry height="46" width="250" x="20" y="100" as="geometry" />
         </mxCell>
-
-        <!-- ===== DATA SOURCES (right rail) ===== -->
-        <mxCell id="ds_rh" value="Red Hat Security Data&#10;access.redhat.com (cve.json / RHSA)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
-          <mxGeometry x="980" y="1020" width="260" height="70" as="geometry" />
+        <mxCell id="t4" parent="ts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" value="rank_options → recommended (disruption-weighted)" vertex="1">
+          <mxGeometry height="46" width="250" x="290" y="100" as="geometry" />
         </mxCell>
-        <mxCell id="ds_feeds" value="Threat intel feeds&#10;CISA KEV · FIRST EPSS · SSVC Table 9" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
-          <mxGeometry x="980" y="1130" width="260" height="70" as="geometry" />
+        <mxCell id="t5" parent="ts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" value="build_playbook → Ansible (+ ansible-lint gate)" vertex="1">
+          <mxGeometry height="46" width="250" x="20" y="160" as="geometry" />
         </mxCell>
-        <mxCell id="ds_pg" value="Postgres + pgvector&#10;doc_chunk (catalog + PDFs), cve cache" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
-          <mxGeometry x="980" y="1450" width="260" height="70" as="geometry" />
+        <mxCell id="t6" parent="ts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;" value="build_decision_package + _audit_trail" vertex="1">
+          <mxGeometry height="46" width="250" x="290" y="160" as="geometry" />
         </mxCell>
-        <mxCell id="ds_ollama" value="Ollama nomic-embed-text&#10;768-d embeddings (RAG dense)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
-          <mxGeometry x="980" y="1540" width="260" height="70" as="geometry" />
+        <mxCell id="res" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" value="Result: {status:ok, intake, advice{...}, account:null}&#xa;→ _persist to recommendation table → NDJSON &quot;result&quot; event" vertex="1">
+          <mxGeometry height="70" width="300" x="440" y="2140" as="geometry" />
         </mxCell>
-        <mxCell id="ds_cat" value="Mitigation Catalog&#10;data/mitigations/*.yaml (allow-list)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
-          <mxGeometry x="980" y="1630" width="260" height="70" as="geometry" />
+        <mxCell id="fin" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" value="Streamlit render_advice()  =  FINAL ANSWER&#xa;vuln card · KEV/EPSS/SSVC priority · controls you have ·&#xa;decision package (residual before/after) · business risk ·&#xa;ranked options (⭐ recommended) · Ansible playbook · export · audit trail" vertex="1">
+          <mxGeometry height="110" width="360" x="410" y="2250" as="geometry" />
         </mxCell>
-
-        <!-- ===== MAIN EDGES ===== -->
-        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="n1" target="n2"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e2" value="POST /advise_stream&#10;{message, persona=primary, answers, force, round}" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="n2" target="n3"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e3" value="advise(message, &quot;primary&quot;, answers, force, account=&quot;&quot;)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="n3" target="n4"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="n4" target="n5"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e5" value="Intake" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="n5" target="d1"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e6y" value="yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="d1" target="n6"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e6n" value="no (off-topic)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="d1" target="refuse"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="n6" target="d2"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e8y" value="yes / force" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="d2" target="n7"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e8n" value="no" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="d2" target="needinfo"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="eloop" value="re-POST answers, round++ (≤2, then force)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="needinfo" target="n2">
-          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1360" y="830"/><mxPoint x="1360" y="115"/><mxPoint x="590" y="115"/></Array></mxGeometry>
+        <mxCell id="refuse" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" value="Refuse&#xa;{status: off_topic}" vertex="1">
+          <mxGeometry height="60" width="180" x="820" y="550" as="geometry" />
         </mxCell>
-        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="n7" target="n8"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e10" value="pinned CVE" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="n8" target="n9"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="n9" target="waveA"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e12" value="MitigationOption[]" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="waveA" target="waveB"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="waveB" target="waveC"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e14" value="AdviceResult" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="waveC" target="ts"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e15" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="ts" target="res"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="e16" value="NDJSON &quot;result&quot; event" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="res" target="fin"><mxGeometry relative="1" as="geometry"/></mxCell>
-
-        <!-- fail-closed edge -->
-        <mxCell id="efc" value="fail-closed" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;strokeColor=#b85450;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="waveA" target="failclosed"><mxGeometry relative="1" as="geometry"/></mxCell>
-
-        <!-- internal wave B floor edge -->
-        <mxCell id="ebfloor" value="caps verdict" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=9;" edge="1" parent="1" source="b1" target="b2"><mxGeometry relative="1" as="geometry"/></mxCell>
-
-        <!-- ===== DATA / LLM DASHED EDGES ===== -->
-        <mxCell id="dl1" style="html=1;endArrow=open;dashed=1;strokeColor=#82b366;" edge="1" parent="1" source="llm" target="n5"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="dl2" style="html=1;endArrow=open;dashed=1;strokeColor=#82b366;" edge="1" parent="1" source="llm" target="n6"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="dl3" style="html=1;endArrow=open;dashed=1;strokeColor=#82b366;" edge="1" parent="1" source="llm" target="n8"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="dl4" style="html=1;endArrow=open;dashed=1;strokeColor=#82b366;" edge="1" parent="1" source="llm" target="b1"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="dl5" style="html=1;endArrow=open;dashed=1;strokeColor=#82b366;" edge="1" parent="1" source="llm" target="b3"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="dl6" style="html=1;endArrow=open;dashed=1;strokeColor=#82b366;" edge="1" parent="1" source="llm" target="c1"><mxGeometry relative="1" as="geometry"/></mxCell>
-
-        <mxCell id="dd1" style="html=1;endArrow=open;dashed=1;strokeColor=#d6b656;" edge="1" parent="1" source="ds_rh" target="n8"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="dd2" style="html=1;endArrow=open;dashed=1;strokeColor=#d6b656;" edge="1" parent="1" source="ds_rh" target="a1"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="dd3" style="html=1;endArrow=open;dashed=1;strokeColor=#d6b656;" edge="1" parent="1" source="ds_feeds" target="n9"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="dd4" style="html=1;endArrow=open;dashed=1;strokeColor=#d6b656;" edge="1" parent="1" source="ds_pg" target="a2"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="dd5" value="embeddings" style="html=1;endArrow=open;dashed=1;strokeColor=#d6b656;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="ds_ollama" target="a2"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell id="dd6" style="html=1;endArrow=open;dashed=1;strokeColor=#d6b656;" edge="1" parent="1" source="ds_cat" target="a4"><mxGeometry relative="1" as="geometry"/></mxCell>
-
+        <mxCell id="needinfo" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="{status: need_info, questions[...]}&#xa;UI renders questionnaire (≤4 closed-choice Qs)" vertex="1">
+          <mxGeometry height="80" width="260" x="820" y="790" as="geometry" />
+        </mxCell>
+        <mxCell id="failclosed" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" value="Fail-closed response&#xa;need_cve · knowledge_base_unavailable&#xa;(RAG down / no applicable catalog option)&#xa;— never invents a fix" vertex="1">
+          <mxGeometry height="90" width="300" x="980" y="1290" as="geometry" />
+        </mxCell>
+        <mxCell id="ds_rh" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="Red Hat Security Data&#xa;access.redhat.com (cve.json / RHSA)" vertex="1">
+          <mxGeometry height="70" width="260" x="980" y="1020" as="geometry" />
+        </mxCell>
+        <mxCell id="ds_feeds" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="Threat intel feeds&#xa;CISA KEV · FIRST EPSS · SSVC Table 9" vertex="1">
+          <mxGeometry height="70" width="260" x="980" y="1130" as="geometry" />
+        </mxCell>
+        <mxCell id="ds_pg" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="Postgres + pgvector&#xa;doc_chunk (catalog + PDFs), cve cache" vertex="1">
+          <mxGeometry height="70" width="260" x="980" y="1450" as="geometry" />
+        </mxCell>
+        <mxCell id="ds_ollama" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="Ollama nomic-embed-text&#xa;768-d embeddings (RAG dense)" vertex="1">
+          <mxGeometry height="70" width="260" x="980" y="1540" as="geometry" />
+        </mxCell>
+        <mxCell id="ds_cat" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="Mitigation Catalog&#xa;data/mitigations/*.yaml (allow-list)" vertex="1">
+          <mxGeometry height="70" width="260" x="980" y="1630" as="geometry" />
+        </mxCell>
+        <mxCell id="e1" edge="1" parent="1" source="n1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="n2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" edge="1" parent="1" source="n2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" target="n3" value="POST /advise_stream&#xa;{message, persona=primary, answers, force, round}">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" edge="1" parent="1" source="n3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" target="n4" value="advise(message, &quot;primary&quot;, answers, force, account=&quot;&quot;)">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" edge="1" parent="1" source="n4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="n5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" edge="1" parent="1" source="n5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" target="d1" value="Intake">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6y" edge="1" parent="1" source="d1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" target="n6" value="yes">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6n" edge="1" parent="1" source="d1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" target="refuse" value="no (off-topic)">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" edge="1" parent="1" source="n6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="d2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8y" edge="1" parent="1" source="d2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" target="n7" value="yes / force">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8n" edge="1" parent="1" source="d2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" target="needinfo" value="no">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eloop" edge="1" parent="1" source="needinfo" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;labelBackgroundColor=#ffffff;fontSize=10;" target="n2" value="re-POST answers, round++ (≤2, then force)">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1360" y="830" />
+              <mxPoint x="1360" y="115" />
+              <mxPoint x="590" y="115" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e9" edge="1" parent="1" source="n7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="n8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" edge="1" parent="1" source="n8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" target="n9" value="pinned CVE">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" edge="1" parent="1" source="n9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="waveA">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" edge="1" parent="1" source="waveA" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" target="waveB" value="MitigationOption[]">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e13" edge="1" parent="1" source="waveB" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="waveC">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" edge="1" parent="1" source="waveC" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" target="ts" value="AdviceResult">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e15" edge="1" parent="1" source="ts" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="res">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e16" edge="1" parent="1" source="res" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=10;" target="fin" value="NDJSON &quot;result&quot; event">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="efc" edge="1" parent="1" source="waveA" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;strokeColor=#b85450;labelBackgroundColor=#ffffff;fontSize=10;" target="failclosed" value="fail-closed">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ebfloor" edge="1" parent="1" source="b1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=#ffffff;fontSize=9;" target="b2" value="caps verdict">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dl1" edge="1" parent="1" source="llm" style="html=1;endArrow=open;dashed=1;strokeColor=#82b366;" target="n5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dl2" edge="1" parent="1" source="llm" style="html=1;endArrow=open;dashed=1;strokeColor=#82b366;" target="n6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dl3" edge="1" parent="1" source="llm" style="html=1;endArrow=open;dashed=1;strokeColor=#82b366;" target="n8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dl4" edge="1" parent="1" source="llm" style="html=1;endArrow=open;dashed=1;strokeColor=#82b366;" target="b1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dl5" edge="1" parent="1" source="llm" style="html=1;endArrow=open;dashed=1;strokeColor=#82b366;" target="b3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dl6" edge="1" parent="1" source="llm" style="html=1;endArrow=open;dashed=1;strokeColor=#82b366;" target="c1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dd1" edge="1" parent="1" source="ds_rh" style="html=1;endArrow=open;dashed=1;strokeColor=#d6b656;" target="n8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dd2" edge="1" parent="1" source="ds_rh" style="html=1;endArrow=open;dashed=1;strokeColor=#d6b656;" target="a1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dd3" edge="1" parent="1" source="ds_feeds" style="html=1;endArrow=open;dashed=1;strokeColor=#d6b656;" target="n9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dd4" edge="1" parent="1" source="ds_pg" style="html=1;endArrow=open;dashed=1;strokeColor=#d6b656;" target="a2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dd5" edge="1" parent="1" source="ds_ollama" style="html=1;endArrow=open;dashed=1;strokeColor=#d6b656;fontSize=9;labelBackgroundColor=#ffffff;" target="a2" value="embeddings">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="dd6" edge="1" parent="1" source="ds_cat" style="html=1;endArrow=open;dashed=1;strokeColor=#d6b656;" target="a4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
