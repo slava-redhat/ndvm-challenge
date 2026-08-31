@@ -15,13 +15,12 @@ spec:
         app: postgres
     spec:
       serviceAccountName: ndvm
-      # NOTE: pgvector/pgvector:pg16 is the upstream postgres image; it
-      # hard-requires UID 999 (or root) to initialize PGDATA and cannot run
-      # under OpenShift's default arbitrary-UID "restricted" SCC. Grant the
-      # ndvm service account "anyuid" first:
-      #   oc adm policy add-scc-to-user anyuid -z ndvm -n ${NAMESPACE}
-      # (see ocp/k8s/serviceaccount-scc-anyuid.md). No runAsUser/fsGroup is
-      # pinned here — anyuid lets the image's own USER directive take effect.
+      # pgvector/pgvector:pg16 (built on the official postgres image) already
+      # supports OpenShift's arbitrary-UID model out of the box: nss_wrapper
+      # fakes a /etc/passwd entry, and the data dirs are world-writable in the
+      # image. The mounted PVC gets proper group-write permissions from
+      # OpenShift's auto-injected fsGroup (restricted SCC), so no "anyuid"
+      # grant is required. No runAsUser/fsGroup pinned here on purpose.
       containers:
         - name: postgres
           image: pgvector/pgvector:pg16

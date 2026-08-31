@@ -141,9 +141,12 @@ def render_and_apply(config: Config, tag: str = "latest",
 
 
 def grant_anyuid(config: Config) -> None:
-    """Required one-time grant so postgres/ollama upstream images (which
-    hard-require UID 999 / root) can run under this project's SCCs. See
-    ocp/k8s/serviceaccount-scc-anyuid.md for why this is needed."""
+    """Not needed by default: postgres/ollama were verified to work under
+    OpenShift's default 'restricted' SCC (arbitrary UID + auto-injected
+    fsGroup) without any elevated grant. Kept as an opt-in escape hatch for
+    clusters with non-standard SCC/fsGroup config — run manually via
+    `python3 ocp/openshift.py grant-anyuid` only if postgres/ollama pods
+    fail with permission errors after a normal deploy."""
     command(["oc", "adm", "policy", "add-scc-to-user", "anyuid",
               "-z", "ndvm", "-n", config.namespace])
 
@@ -231,11 +234,10 @@ def print_route_urls(config: Config) -> None:
 
 
 def bootstrap(config: Config) -> None:
-    """One-time setup: service account + image streams/build configs +
-    anyuid grant. Safe to re-run."""
+    """One-time setup: service account + image streams/build configs.
+    Safe to re-run."""
     check_login()
     render_and_apply(config, only={"serviceaccount.yaml"})
-    grant_anyuid(config)
     render_and_apply(config, only={"imagestream.yaml", "buildconfig.yaml"})
 
 
@@ -281,6 +283,7 @@ def main() -> None:
     deploy_parser.add_argument("--tag", default="latest")
     subcommands.add_parser("sync-secrets", help="Update secrets/configmaps from .env and data/")
     subcommands.add_parser("routes", help="Print the NDVM route URLs")
+    subcommands.add_parser("grant-anyuid", help="Troubleshooting only: grant anyuid SCC (needs project admin)")
     teardown_parser = subcommands.add_parser("teardown", help="Delete all NDVM resources in the project")
     teardown_parser.add_argument("--yes", action="store_true", help="Confirm destructive deletion")
     args = parser.parse_args()
@@ -294,6 +297,9 @@ def main() -> None:
     elif args.action == "routes":
         check_login()
         print_route_urls(config)
+    elif args.action == "grant-anyuid":
+        check_login()
+        grant_anyuid(config)
     else:
         teardown(config, args.yes)
 

@@ -13,7 +13,7 @@ Differences from the GKE deployment (`gcp/gke.py`):
 | Cloud Build + Artifact Registry        | `BuildConfig` (binary Docker build) + `ImageStream`, pushed to the project's internal registry |
 | `Ingress` (nginx)                      | `Route` (one per path, since Route paths are prefix-only) |
 | fixed `runAsUser: 1000` / `fsGroup: 1000` | no fixed UID — the default `restricted` SCC assigns one automatically |
-| —                                       | `anyuid` SCC grant required for the upstream postgres/ollama images (see below) |
+| —                                       | ollama's `$HOME` (`/root`) relocated via `HOME=/data` — its default home dir isn't reachable under an arbitrary UID |
 
 ## 0. Prerequisites
 
@@ -35,17 +35,17 @@ Differences from the GKE deployment (`gcp/gke.py`):
 python3 ocp/openshift.py bootstrap
 ```
 
-Creates the `ndvm` ServiceAccount, grants it the `anyuid` SCC (required
-because `pgvector/pgvector:pg16` and `ollama/ollama` are upstream images that
-hard-require UID 999/root and can't run under OpenShift's default
-arbitrary-UID SCC — see `ocp/k8s/serviceaccount-scc-anyuid.md`), and creates
-the `orchestrator`/`ui` ImageStreams + BuildConfigs.
+Creates the `ndvm` ServiceAccount and the `orchestrator`/`ui` ImageStreams +
+BuildConfigs. No SCC grant is needed by default — postgres (built on the
+official image, which already supports OpenShift's arbitrary-UID model via
+nss_wrapper) and ollama (fixed here by pointing `$HOME` at the PVC mount
+instead of `/root`) both run fine under the default `restricted` SCC.
 
-If `anyuid` grant fails with a permissions error, your trial account may not
-have `admin` on the project — ask whoever provisioned it, or run the command
-manually as an admin:
+If a pod still fails with a permission error on your specific cluster (some
+clusters have non-standard SCC/fsGroup config), you can grant `anyuid` as a
+troubleshooting escape hatch — requires project-admin rights:
 ```
-oc adm policy add-scc-to-user anyuid -z ndvm -n <namespace>
+python3 ocp/openshift.py grant-anyuid
 ```
 
 ## 2. Deploy
@@ -60,6 +60,20 @@ This:
 3. Applies postgres/ollama StatefulSets and waits for rollout.
 4. Applies the orchestrator/ui Deployments (image-triggers pick up the freshly built images automatically) and Routes.
 5. Prints the Route URLs.
+
+## Restore an existing DB dump
+
+The dump format is plain `pg_dump` gzip'd SQL — the same file works whether
+it was created for GCP or here. Reuse `gcp/backups/ndvm-vector.sql.gz` (or
+create a fresh one from your local podman-compose stack):
+```
+python3 ocp/db_transfer.py restore --input gcp/backups/ndvm-vector.sql.gz
+# or, to make a new backup from your local stack first:
+python3 ocp/db_transfer.py backup --output ocp/backups/ndvm-vector.sql.gz
+python3 ocp/db_transfer.py restore --input ocp/backups/ndvm-vector.sql.gz
+```
+This scales `orchestrator` to 0, streams the dump into the `postgres-0` pod
+via `oc exec`, then restores the original replica count.
 
 ## Other commands
 

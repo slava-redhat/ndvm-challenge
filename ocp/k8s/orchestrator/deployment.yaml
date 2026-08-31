@@ -21,9 +21,11 @@ spec:
     spec:
       serviceAccountName: ndvm
       # No fixed runAsUser/fsGroup here: OpenShift's "restricted" SCC assigns
-      # an arbitrary non-root UID (and matching fsGroup) from the project's
-      # allocated range automatically. The orchestrator image already runs as
-      # a non-root "app" user, so this is compatible without an SCC grant.
+      # an arbitrary non-root UID (GID 0) from the project's allocated range.
+      # That UID does NOT match the image's baked-in "app" user, so
+      # /home/app (0700, owned by app:app) is unreachable. CrewAI's chromadb
+      # storage (and possibly other libs) write under $$HOME/.local/share, so
+      # HOME is redirected below to /tmp (world-writable in the base image).
       securityContext:
         runAsNonRoot: true
       containers:
@@ -41,6 +43,8 @@ spec:
             - secretRef:
                 name: ndvm-secrets
           env:
+            - name: HOME
+              value: /tmp
             - name: PGHOST
               value: postgres
             - name: PGPORT

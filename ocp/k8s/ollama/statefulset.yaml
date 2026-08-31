@@ -15,9 +15,13 @@ spec:
         app: ollama
     spec:
       serviceAccountName: ndvm
-      # NOTE: ollama/ollama runs as root by default and writes to
-      # /root/.ollama; it needs the same "anyuid" SCC grant as postgres
-      # (see ocp/k8s/serviceaccount-scc-anyuid.md).
+      # ollama/ollama's default $$HOME (/root) is mode 0700 with no group
+      # bits, so it's unreachable under OpenShift's arbitrary-UID SCC even
+      # with the auto-injected fsGroup. Fix: point HOME at the PVC mount
+      # itself (world-creatable path) instead of /root — no SCC changes
+      # needed. (Verified locally: postgres's official image already
+      # supports arbitrary UIDs out of the box via nss_wrapper + fsGroup;
+      # only ollama needed this workaround.)
       containers:
         - name: ollama
           image: ollama/ollama:0.12.10
@@ -27,6 +31,8 @@ spec:
           env:
             - name: OLLAMA_EMBED_MODEL
               value: nomic-embed-text
+            - name: HOME
+              value: /data
           command: ["sh", "-c"]
           args:
             - |
@@ -38,7 +44,7 @@ spec:
               wait "$$server_pid"
           volumeMounts:
             - name: ollama-data
-              mountPath: /root/.ollama
+              mountPath: /data
           resources:
             requests:
               cpu: ${OLLAMA_CPU_REQUEST}
