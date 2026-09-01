@@ -1,5 +1,6 @@
 """CrewAI tools: Red Hat Security Data lookup + local RAG search."""
 import json
+import re
 from functools import lru_cache
 from typing import Type
 
@@ -44,6 +45,45 @@ def lookup_vuln_finding(cve: str, product: str = "") -> VulnFinding:
         return VulnFinding(cve_id=cve.upper(), fix_state="unknown",
                            rationale="CVE not found in Red Hat data", ndvm_applies=True)
     return VulnFinding(**analyze_cve_json(data, product))
+
+
+def _pkg_base(nvra: str) -> str:
+    """NVRA -> package base name, e.g. 'cockpit-0:344-2.el9_7' -> 'cockpit'."""
+    name = (nvra or "").split(":", 1)[0]       # drop epoch:version.. -> 'cockpit-0'
+    return re.sub(r"-\d.*$", "", name).strip("-")  # drop trailing '-<epoch/version>'
+
+
+def cve_affected_packages(cve: str) -> set[str]:
+    """Authoritative affected-package base names for a CVE from Red Hat data (cached).
+
+    Empty set means 'can't verify' (unknown/unreachable CVE) — callers must NOT read
+    it as 'affects nothing'. Used to check a discovered CVE actually concerns the
+    software the user named, before it is pinned as authoritative.
+    """
+    cve = (cve or "").strip()
+    if not valid_cve(cve):
+        return set()
+    try:
+        data = _fetch_cve_json(cve.upper())
+    except requests.RequestException:
+        return set()
+    if not data:
+        return set()
+    pkgs = set()
+    for st in data.get("package_state") or []:            # clean names: 'openssh', 'cockpit'
+        name = (st.get("package_name") or "").strip().lower()
+        if name:
+            pkgs.add(name)
+    for rel in data.get("affected_release") or []:        # NVRA -> base name
+        base = _pkg_base((rel.get("package") or "").strip().lower())
+        if base:
+            pkgs.add(base)
+    bz = ((data.get("bugzilla") or {}).get("description") or "").strip().lower()
+    if ":" in bz:                                          # 'cockpit: <desc>' -> component
+        head = bz.split(":", 1)[0].strip()
+        if head and " " not in head:
+            pkgs.add(head)
+    return {p for p in pkgs if p}
 
 
 class SecDataInput(BaseModel):

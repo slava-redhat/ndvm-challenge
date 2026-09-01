@@ -47,7 +47,7 @@ from priority import (adjust_tier, apply_ssvc_context, assess, build_decision_pa
                       classify, compliance_note, compliance_signal, priority_note)
 from scoring import rank_options
 from db import rag_search_hybrid
-from tools import RedHatCveSearchTool, lookup_vuln_finding
+from tools import RedHatCveSearchTool, cve_affected_packages, lookup_vuln_finding
 
 _WAVE_TIMEOUT = float(_os.environ.get("NDVM_WAVE_TIMEOUT", "180"))
 _SYNTH_MAX_TOKENS = int(_os.environ.get("NDVM_SYNTH_MAX_TOKENS", "8192"))
@@ -384,6 +384,59 @@ def run_research(intake: Intake) -> CveChoice:
     return _require_pydantic(crew.kickoff(inputs={**intake.model_dump()}), "research")
 
 
+# Relevance guard for the "no CVE named" path. ponytail: heuristic token match —
+# known ceiling. Upgrade path: step 1 (extract Intake.package + package-filtered
+# search) lets the researcher pick a matching CVE up front and makes this an exact
+# package-to-package check. Platform/vendor/generic words are stripped so only real
+# software tokens ("openssh", "cockpit") are treated as a package claim.
+_PKG_STOP = {
+    "rhel", "centos", "redhat", "red", "hat", "enterprise", "linux", "openshift",
+    "fedora", "stream", "the", "and", "for", "with", "without", "can", "cant",
+    "cannot", "have", "has", "issue", "issues", "problem", "problems", "worry",
+    "worried", "help", "security", "vulnerability", "vulnerabilities", "vuln", "cve",
+    "patch", "patching", "reboot", "reboots", "downtime", "production", "prod",
+    "maintenance", "window", "fleet", "tier", "web", "app", "server", "servers",
+    "system", "systems", "cluster", "clusters", "node", "nodes", "version",
+    "versions", "old", "new", "running", "runs", "run", "use", "using", "used",
+    "need", "needs", "what", "should", "about", "this", "that", "some", "any",
+    "get", "got", "our", "your", "flagged", "affected", "exposed",
+}
+_PKG_TOKEN = re.compile(r"[a-z][a-z0-9][a-z0-9+._-]{1,}")
+
+
+def _named_software(message: str) -> set[str]:
+    """Software-name tokens the user actually typed (platform/generic words removed)."""
+    return {t for t in _PKG_TOKEN.findall((message or "").lower())
+            if t not in _PKG_STOP and not t.isdigit()}
+
+
+def _pkg_hits(pkgs: set[str], named: set[str]) -> bool:
+    for p in pkgs:
+        for n in named:
+            if p == n or (len(p) >= 4 and len(n) >= 4 and (p in n or n in p)):
+                return True
+    return False
+
+
+def _pkg_relevant(pkgs: set[str], message: str) -> bool:
+    """True unless the user named specific software that the CVE's packages don't cover.
+
+    - No software named (open-ended 'what should I worry about') -> True: nothing to
+      contradict, discovery is legitimately open.
+    - CVE packages unknown (can't verify) -> True: never block on missing RH data.
+    """
+    named = _named_software(message)
+    if not named or not pkgs:
+        return True
+    return _pkg_hits(pkgs, named)
+
+
+def _pick_matches_request(cve: str, message: str) -> bool:
+    """A discovered CVE must concern software the user named. Compares the CVE's
+    authoritative Red Hat affected-package names against the words in the message."""
+    return _pkg_relevant(cve_affected_packages(cve), message)
+
+
 def _kick(agent: Agent, task: Task, inputs: dict):
     """Run one agent+task as a single-task crew. Lets a wave fan out across threads, each
     with its own crew, instead of one sequential crew (CrewAI serializes tasks in a crew)."""
@@ -470,7 +523,7 @@ def _knowledge_base_unavailable(message: str) -> dict:
 
 
 def run_advice(intake: Intake, persona: str, answers: str = "",
-               compliance: list | None = None) -> dict:
+               compliance: list | None = None, message: str = "") -> dict:
     progress.check_cancel()
     # Pin the CVE deterministically: use the one the customer gave, else research once
     # and lock the pick in Python so later agents can't switch to a different CVE.
@@ -478,7 +531,13 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
     if researched:
         progress.emit("Discovering the CVE in Red Hat's catalog")
         found = run_research(intake).cve
-        intake = intake.model_copy(update={"cve": found if valid_cve(found) else ""})
+        picked = found if valid_cve(found) else ""
+        # Fail-closed relevance guard: a discovered CVE must concern the software the
+        # user named. Otherwise drop it -> needs_cve (ask), never analyze a random CVE.
+        if picked and not _pick_matches_request(picked, message):
+            progress.emit(f"Discovered {picked} does not match the named software — asking")
+            picked = ""
+        intake = intake.model_copy(update={"cve": picked})
     if not valid_cve(intake.cve):
         return {"needs_cve": True}
 
@@ -790,12 +849,12 @@ class NDVMFlow(Flow[NDVMState]):
     @listen("primary")
     def primary_flow(self):
         self.state.result = run_advice(self.state.intake, "primary", self.state.answers,
-                                       self._compliance())
+                                       self._compliance(), message=self.state.message)
 
     @listen("secondary")
     def secondary_flow(self):
         self.state.result = run_advice(self.state.intake, "secondary", self.state.answers,
-                                       self._compliance())
+                                       self._compliance(), message=self.state.message)
 
     def _compliance(self):
         return (self.state.account_view or {}).get("compliance")
