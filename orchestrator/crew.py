@@ -35,6 +35,7 @@ except Exception:  # pragma: no cover - internal API, tolerate its absence
 from accounts import (account_view, default_cve, detect_account, estate_as_answers,
                       load_account)
 from cve_parse import filter_rag_hits_for_cve, find_cves, prefer_mitigation_hits, valid_cve
+from harvest import harvest_answers, merge_answers, remaining_cves
 from catalog import (catalog_context, filter_applicable_hits, materialize_options,
                      pin_options_to_catalog)
 from control_matrix import validate_control
@@ -291,6 +292,10 @@ def _gate_agent() -> Agent:
 
 
 def run_gate(message: str, intake: Intake, answers: str = "") -> Sufficiency:
+    # Pull freeze/controls/exposure already stated in the opening prose into [key] lines
+    # so the LLM gate (and _sanitize_gate_questions) will not re-ask them.
+    answers = merge_answers(harvest_answers(message), answers)
+
     # Multi-CVE messages: force a radio pick before any LLM gate (one advice run = one CVE).
     named = find_cves(message)
     if len(named) > 1:
@@ -342,9 +347,11 @@ def run_gate(message: str, intake: Intake, answers: str = "") -> Sufficiency:
             "traffic/workloads to another cluster or cloud', and 'no safe alternate capacity'. "
             "If an exact package/version would change advice, offer Other rather than forcing "
             "a free-text question.\n"
-            "Only ask what would change the recommendation, and do not re-ask anything "
-            "already answered above. Never ask to verify/correct the CVE id when it is "
-            "already well-formed (CVE-YYYY-NNNN).\n"
+            "Only ask what would change the recommendation. Treat facts already stated in "
+            "the customer message OR in Answers as known — do not re-ask them (including "
+            "maintenance/reboot freeze, SELinux/firewall controls, exposure, backup/DR). "
+            "Never ask to verify/correct the CVE id when it is already well-formed "
+            "(CVE-YYYY-NNNN).\n"
             "If the picture is clear enough, set sufficient=true and leave questions empty."
         ),
         expected_output="A Sufficiency object.",
@@ -823,6 +830,9 @@ class NDVMFlow(Flow[NDVMState]):
 
         if not self.state.force:
             progress.emit("Checking the case fits your environment")
+            # Persist harvested facts so advice (not only the gate) sees them.
+            self.state.answers = merge_answers(
+                harvest_answers(self.state.message), self.state.answers)
         self.state.gate = (Sufficiency(sufficient=True) if self.state.force
                            else run_gate(self.state.message, self.state.intake,
                                          self.state.answers))
@@ -875,7 +885,8 @@ def advise(message: str, forced_persona: str = "", answers: str = "",
     if not s.gate.sufficient:
         return {"intake": s.intake.model_dump(), "status": "need_info", "advice": None,
                 "missing": s.gate.missing,
-                "questions": [q.model_dump() for q in s.gate.questions]}
+                "questions": [q.model_dump() for q in s.gate.questions],
+                "answers": s.answers}
     if isinstance(s.result, dict) and s.result.get("needs_cve"):
         return {"intake": s.intake.model_dump(), "status": "need_cve", "advice": None,
                 "message": ("I couldn't determine a specific CVE from your request. Please "
@@ -887,5 +898,9 @@ def advise(message: str, forced_persona: str = "", answers: str = "",
     if s.result is None:
         return {"intake": s.intake.model_dump(), "status": "error", "advice": None,
                 "message": "advice flow completed without a result"}
-    return {"intake": s.intake.model_dump(), "status": "ok", "advice": s.result,
-            "account": s.account_view}
+    out = {"intake": s.intake.model_dump(), "status": "ok", "advice": s.result,
+            "account": s.account_view, "answers": s.answers}
+    queue = remaining_cves(message, s.intake.cve or "")
+    if queue:
+        out["cve_queue"] = queue
+    return out

@@ -714,6 +714,9 @@ if pending:
             ss.pop("result", None)
         else:
             ss.pop("pending", None)
+            data["_orig_msg"] = pending["orig_msg"]
+            data["_persona"] = pending["persona"]
+            data["_account"] = pending.get("account", "")
             ss["result"] = data
         st.rerun()
 
@@ -722,11 +725,14 @@ elif st.button("Get mitigation options", type="primary") and msg.strip():
     data = run_with_progress(msg, persona, account=account)
     if data.get("status") == "need_info":
         ss["pending"] = {"questions": data["questions"], "missing": data.get("missing", []),
-                         "orig_msg": msg, "persona": persona, "answers": "", "round": 1,
-                         "account": account,
+                         "orig_msg": msg, "persona": persona, "answers": data.get("answers") or "",
+                         "round": 1, "account": account,
                          "cve": (data.get("intake") or {}).get("cve", "")}
         ss.pop("result", None)
     else:
+        data["_orig_msg"] = msg
+        data["_persona"] = persona
+        data["_account"] = account
         ss["result"] = data
     st.rerun()
 
@@ -742,5 +748,43 @@ if ss.get("result"):
             render_account(data["account"])
         if advice:
             render_advice(intake, advice, data.get("account"))
+            # Remaining CVEs from the opening message — one advice run = one CVE.
+            queue = [c for c in (data.get("cve_queue") or []) if c]
+            if queue and not pending:
+                st.markdown("### More CVEs from your request")
+                st.caption("One CVE at a time. Pick the next to analyze with the same environment facts.")
+                cols = st.columns(min(len(queue), 3))
+                for i, next_cve in enumerate(queue):
+                    if cols[i % len(cols)].button(
+                            f"Next: analyze {next_cve}", key=f"next_cve_{next_cve}",
+                            type="secondary"):
+                        which = (f"[which_cve] You named more than one CVE — which should we "
+                                 f"analyze first?: {next_cve}")
+                        prior = (data.get("answers") or "").strip()
+                        # Drop any previous which_cve line so the new pick wins.
+                        prior_lines = [ln for ln in prior.splitlines()
+                                       if not ln.lower().startswith("[which_cve]")]
+                        merged = "\n".join([which] + prior_lines).strip()
+                        orig = data.get("_orig_msg") or msg
+                        persona_r = data.get("_persona") or persona
+                        account_r = data.get("_account") or account
+                        data2 = run_with_progress(orig, persona_r, merged, False,
+                                                  account_r, round=1)
+                        if data2.get("status") == "need_info":
+                            ss["pending"] = {
+                                "questions": data2["questions"],
+                                "missing": data2.get("missing", []),
+                                "orig_msg": orig, "persona": persona_r,
+                                "answers": merged, "round": 1, "account": account_r,
+                                "cve": (data2.get("intake") or {}).get("cve", next_cve),
+                            }
+                            ss.pop("result", None)
+                        else:
+                            data2["_orig_msg"] = orig
+                            data2["_persona"] = persona_r
+                            data2["_account"] = account_r
+                            ss.pop("pending", None)
+                            ss["result"] = data2
+                        st.rerun()
         else:
             st.warning("No advice produced. Check the CVE id and try again.")
