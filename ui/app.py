@@ -659,6 +659,8 @@ def render_advice(intake, advice, account=None):
 if pending:
     pending_cve = pending.get("cve") or "this CVE"
     st.info(f"Answering follow-up questions for **{pending_cve}**. I won't guess.")
+    if pending.get("message_warning"):
+        st.warning(pending["message_warning"])
     if st.button("Start a new question", key="cancel_pending",
                  icon=":material/restart_alt:"):
         ss.pop("pending", None)
@@ -710,7 +712,8 @@ if pending:
                              "orig_msg": pending["orig_msg"], "persona": pending["persona"],
                              "answers": merged, "round": rnd,
                              "account": pending.get("account", ""),
-                             "cve": (data.get("intake") or {}).get("cve") or pending.get("cve", "")}
+                             "cve": (data.get("intake") or {}).get("cve") or pending.get("cve", ""),
+                             "message_warning": data.get("message_warning") or pending.get("message_warning")}
             ss.pop("result", None)
         else:
             ss.pop("pending", None)
@@ -727,7 +730,8 @@ elif st.button("Get mitigation options", type="primary") and msg.strip():
         ss["pending"] = {"questions": data["questions"], "missing": data.get("missing", []),
                          "orig_msg": msg, "persona": persona, "answers": data.get("answers") or "",
                          "round": 1, "account": account,
-                         "cve": (data.get("intake") or {}).get("cve", "")}
+                         "cve": (data.get("intake") or {}).get("cve", ""),
+                         "message_warning": data.get("message_warning")}
         ss.pop("result", None)
     else:
         data["_orig_msg"] = msg
@@ -739,9 +743,13 @@ elif st.button("Get mitigation options", type="primary") and msg.strip():
 # Render the last produced advice (survives download-button reruns).
 if ss.get("result"):
     data = ss["result"]
-    if data.get("status") in ("off_topic", "need_cve", "knowledge_base_unavailable"):
-        st.warning(data.get("message", "No verified mitigation guidance is available."))
+    if data.get("status") in ("off_topic", "need_cve", "knowledge_base_unavailable",
+                              "unknown_cve"):
+        (st.error if data.get("status") == "unknown_cve" else st.warning)(
+            data.get("message", "No verified mitigation guidance is available."))
     else:
+        if data.get("message_warning"):
+            st.warning(data["message_warning"])
         intake = data.get("intake", {})
         advice = data.get("advice") or {}
         if data.get("account"):

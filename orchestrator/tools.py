@@ -1,7 +1,6 @@
 """CrewAI tools: Red Hat Security Data lookup + local RAG search."""
 import json
 import re
-from functools import lru_cache
 from typing import Type
 
 import requests
@@ -14,19 +13,68 @@ from models import VulnFinding
 
 SECDATA = "https://access.redhat.com/hydra/rest/securitydata/cve/{cve}.json"
 CVE_LIST = "https://access.redhat.com/hydra/rest/securitydata/cve.json"
+# ponytail: short probe — existence check must not stall the gate behind a 30s socket
+_RH_TIMEOUT = (3.05, 8)  # (connect, read) seconds
+
+# Complete-only cache (no lock held across I/O). lru_cache wraps the whole call in a
+# lock — one hung RH GET blocked every advise thread on "Checking CVE ids…".
+_CVE_JSON_CACHE: dict[str, dict | None] = {}
+_CVE_JSON_CACHE_MAX = 1024
 
 
-@lru_cache(maxsize=1024)
 def _fetch_cve_json(cve: str):
-    """Red Hat Security Data for one CVE, cached per process (same pattern as the KEV
-    feed). Returns the raw JSON, or None for a 404. Network/HTTP errors propagate so
-    lru_cache doesn't memoize a transient failure. Cached by CVE only — product
-    filtering happens in analyze_cve_json, so different products reuse one fetch."""
-    r = requests.get(SECDATA.format(cve=cve), params={"isCompressed": "false"}, timeout=30)
+    """Red Hat Security Data for one CVE. Returns JSON, or None for a 404.
+
+    Network/HTTP errors propagate so callers can fail soft. Only successful
+    lookups (including 404→None) are cached.
+    """
+    key = (cve or "").upper()
+    if key in _CVE_JSON_CACHE:
+        return _CVE_JSON_CACHE[key]
+    r = requests.get(SECDATA.format(cve=key), params={"isCompressed": "false"},
+                     timeout=_RH_TIMEOUT)
     if r.status_code == 404:
+        data = None
+    else:
+        r.raise_for_status()
+        data = r.json()
+    if len(_CVE_JSON_CACHE) >= _CVE_JSON_CACHE_MAX:
+        _CVE_JSON_CACHE.clear()  # ponytail: wipe vs LRU bookkeeping
+    _CVE_JSON_CACHE[key] = data
+    return data
+
+
+def redhat_cve_exists(cve: str) -> bool | None:
+    """True if Red Hat has this CVE, False if 404/unknown id, None if unreachable."""
+    cve = (cve or "").strip()
+    if not valid_cve(cve):
+        return False
+    try:
+        return _fetch_cve_json(cve.upper()) is not None
+    except requests.RequestException:
         return None
-    r.raise_for_status()
-    return r.json()
+
+
+def partition_redhat_cves(cves: list[str]) -> tuple[list[str], list[str]]:
+    """Split CVE ids into (keep, unknown_404). Unreachable stay in keep — don't false-drop."""
+    keep, unknown = [], []
+    for c in cves:
+        hit = redhat_cve_exists(c)
+        if hit is False:
+            unknown.append(c.upper() if c else c)
+        else:
+            keep.append(c.upper() if c else c)
+    return keep, unknown
+
+
+def unknown_cve_message(unknown: list[str]) -> str:
+    ids = ", ".join(unknown)
+    if len(unknown) == 1:
+        return (f"{ids} is not in Red Hat's vulnerability database — I can't give "
+                "Red Hat–grounded mitigation advice for an unknown CVE. Check the id "
+                "on access.redhat.com/security/cve, or name a known CVE.")
+    return (f"These CVE ids are not in Red Hat's vulnerability database and were "
+            f"dropped: {ids}. I only analyze CVEs Red Hat publishes.")
 
 
 def lookup_vuln_finding(cve: str, product: str = "") -> VulnFinding:

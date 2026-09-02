@@ -35,7 +35,7 @@ except Exception:  # pragma: no cover - internal API, tolerate its absence
 from accounts import (account_view, default_cve, detect_account, estate_as_answers,
                       load_account)
 from cve_parse import filter_rag_hits_for_cve, find_cves, prefer_mitigation_hits, valid_cve
-from harvest import harvest_answers, merge_answers, remaining_cves
+from harvest import harvest_answers, merge_answers, remaining_cves, select_cve
 from catalog import (catalog_context, filter_applicable_hits, materialize_options,
                      pin_options_to_catalog)
 from control_matrix import validate_control
@@ -48,7 +48,8 @@ from priority import (adjust_tier, apply_ssvc_context, assess, build_decision_pa
                       classify, compliance_note, compliance_signal, priority_note)
 from scoring import rank_options
 from db import rag_search_hybrid
-from tools import RedHatCveSearchTool, cve_affected_packages, lookup_vuln_finding
+from tools import (RedHatCveSearchTool, cve_affected_packages, lookup_vuln_finding,
+                   partition_redhat_cves, redhat_cve_exists, unknown_cve_message)
 
 _WAVE_TIMEOUT = float(_os.environ.get("NDVM_WAVE_TIMEOUT", "180"))
 _SYNTH_MAX_TOKENS = int(_os.environ.get("NDVM_SYNTH_MAX_TOKENS", "8192"))
@@ -291,32 +292,60 @@ def _gate_agent() -> Agent:
     )
 
 
-def run_gate(message: str, intake: Intake, answers: str = "") -> Sufficiency:
+def _which_cve_gate(named: list[str]) -> Sufficiency:
+    return Sufficiency(
+        sufficient=False,
+        missing=["cve"],
+        questions=[ClarifyQuestion(
+            key="which_cve",
+            question="You named more than one CVE — which should we analyze first?",
+            options=named,
+            multi=False,
+        )],
+    )
+
+
+def _drop_unknown_cves(message: str) -> tuple[list[str], list[str]]:
+    """Keep only CVEs Red Hat knows (or couldn't reach). Unknown 404s are dropped."""
+    named = find_cves(message)
+    if not named:
+        return [], []
+    progress.emit("Checking CVE ids against Red Hat Security Data")
+    keep, unknown = partition_redhat_cves(named)
+    progress.check_cancel()
+    if unknown and keep:
+        progress.emit(
+            f"Dropped unknown CVE(s): {', '.join(unknown)} — continuing with "
+            f"{', '.join(keep)}"
+        )
+    elif unknown and not keep:
+        progress.emit(f"CVE not in Red Hat's database: {', '.join(unknown)}")
+    elif keep:
+        progress.emit(f"CVE id confirmed in Red Hat data: {', '.join(keep)}")
+    return keep, unknown
+
+
+def _gate_already_satisfied(answers: str) -> bool:
+    """Skip the LLM gate when the opening message already stated the freeze constraint.
+
+    One-CVE demos were 'stuck' on the prior step for minutes waiting on this LLM call;
+    two-CVE messages often returned earlier via which_cve and looked fine.
+    """
+    return "maintenance_window" in _answered_gate_keys(answers)
+
+
+def run_gate(message: str, intake: Intake, answers: str = "",
+             named: list[str] | None = None) -> Sufficiency:
     # Pull freeze/controls/exposure already stated in the opening prose into [key] lines
     # so the LLM gate (and _sanitize_gate_questions) will not re-ask them.
     answers = merge_answers(harvest_answers(message), answers)
 
-    # Multi-CVE messages: force a radio pick before any LLM gate (one advice run = one CVE).
-    named = find_cves(message)
-    if len(named) > 1:
-        # Match CVE only in answer values (after ':'), not in question prose.
-        answer_vals = " ".join(
-            line.split(":", 1)[-1]
-            for line in (answers or "").splitlines() if ":" in line
-        ).upper()
-        picked = next((c for c in named if c in answer_vals), "")
-        if not picked:
-            return Sufficiency(
-                sufficient=False,
-                missing=["cve"],
-                questions=[ClarifyQuestion(
-                    key="which_cve",
-                    question="You named more than one CVE — which should we analyze first?",
-                    options=named,
-                    multi=False,
-                )],
-            )
-        intake.cve = picked
+    # Multi-CVE: pin or ask before any LLM gate (also applied in triage under force).
+    sel = select_cve(message, answers, named=named)
+    if sel is None:
+        return _which_cve_gate(named if named is not None else find_cves(message))
+    if sel:
+        intake.cve = sel
 
     agent = _gate_agent()
     task = Task(
@@ -530,8 +559,16 @@ def _knowledge_base_unavailable(message: str) -> dict:
 
 
 def run_advice(intake: Intake, persona: str, answers: str = "",
-               compliance: list | None = None, message: str = "") -> dict:
+               compliance: list | None = None, message: str = "",
+               named: list[str] | None = None) -> dict:
     progress.check_cancel()
+    # Message / which_cve answers win over a blank or confused router (incl. force-skip).
+    sel = select_cve(message, answers, named=named)
+    if sel:
+        intake = intake.model_copy(update={"cve": sel})
+    if intake.cve.strip() and redhat_cve_exists(intake.cve) is False:
+        u = [intake.cve.strip().upper()]
+        return {"unknown_cve": True, "unknown_cves": u, "message": unknown_cve_message(u)}
     # Pin the CVE deterministically: use the one the customer gave, else research once
     # and lock the pick in Python so later agents can't switch to a different CVE.
     researched = not intake.cve.strip()
@@ -785,6 +822,8 @@ class NDVMState(BaseModel):
     gate: Sufficiency | None = None
     account_view: dict | None = None
     result: dict | None = None
+    known_cves: list[str] = []       # message CVEs present in Red Hat data (or unchecked)
+    unknown_cves: list[str] = []     # message CVEs that 404'd on Red Hat — dropped
 
 
 class NDVMFlow(Flow[NDVMState]):
@@ -796,6 +835,29 @@ class NDVMFlow(Flow[NDVMState]):
         if not self.state.intake.on_topic:
             self.state.gate = Sufficiency(sufficient=True)
             return
+
+        known, unknown = _drop_unknown_cves(self.state.message)
+        self.state.known_cves = known
+        self.state.unknown_cves = unknown
+        if unknown and not known and find_cves(self.state.message):
+            # Every named CVE is unknown to Red Hat. Use need_info (proven Flow path)
+            # — a custom @listen("unknown_cve") never finished kickoff, so the UI stayed
+            # stuck on "Checking CVE ids…".
+            self.state.gate = Sufficiency(
+                sufficient=False,
+                missing=["cve"],
+                questions=[ClarifyQuestion(
+                    key="cve_unknown",
+                    question=unknown_cve_message(unknown),
+                    options=["I'll provide a different CVE", OTHER_OPTION],
+                    multi=False,
+                )],
+            )
+            return
+        if known and self.state.intake.cve.strip().upper() not in {c.upper() for c in known}:
+            # Router pinned a dropped/unknown id — clear so select_cve can repin.
+            if redhat_cve_exists(self.state.intake.cve) is False:
+                self.state.intake.cve = ""
 
         acc = None
         if self.state.account:
@@ -828,14 +890,27 @@ class NDVMFlow(Flow[NDVMState]):
             self.state.gate = Sufficiency(sufficient=True)
             return
 
-        if not self.state.force:
-            progress.emit("Checking the case fits your environment")
-            # Persist harvested facts so advice (not only the gate) sees them.
-            self.state.answers = merge_answers(
-                harvest_answers(self.state.message), self.state.answers)
-        self.state.gate = (Sufficiency(sufficient=True) if self.state.force
-                           else run_gate(self.state.message, self.state.intake,
-                                         self.state.answers))
+        # Always harvest + resolve multi-CVE — even when force skips the LLM gate,
+        # otherwise which_cve answers never pin intake.cve and advice returns needs_cve.
+        self.state.answers = merge_answers(
+            harvest_answers(self.state.message), self.state.answers)
+        named = self.state.known_cves if find_cves(self.state.message) else None
+        sel = select_cve(self.state.message, self.state.answers, named=named)
+        if sel is None:
+            self.state.gate = _which_cve_gate(named or find_cves(self.state.message))
+            return
+        if sel:
+            self.state.intake.cve = sel
+
+        if self.state.force or _gate_already_satisfied(self.state.answers):
+            # Harvested freeze → skip LLM gate wait (was the one-CVE "stuck" feeling).
+            if not self.state.force and _gate_already_satisfied(self.state.answers):
+                progress.emit("Maintenance freeze already stated — skipping more questions")
+            self.state.gate = Sufficiency(sufficient=True)
+            return
+        progress.emit("Checking the case fits your environment")
+        self.state.gate = run_gate(self.state.message, self.state.intake, self.state.answers,
+                                 named=named)
 
     @router(triage)
     def route(self):
@@ -858,13 +933,17 @@ class NDVMFlow(Flow[NDVMState]):
 
     @listen("primary")
     def primary_flow(self):
+        named = self.state.known_cves if find_cves(self.state.message) else None
         self.state.result = run_advice(self.state.intake, "primary", self.state.answers,
-                                       self._compliance(), message=self.state.message)
+                                       self._compliance(), message=self.state.message,
+                                       named=named)
 
     @listen("secondary")
     def secondary_flow(self):
+        named = self.state.known_cves if find_cves(self.state.message) else None
         self.state.result = run_advice(self.state.intake, "secondary", self.state.answers,
-                                       self._compliance(), message=self.state.message)
+                                       self._compliance(), message=self.state.message,
+                                       named=named)
 
     def _compliance(self):
         return (self.state.account_view or {}).get("compliance")
@@ -876,31 +955,64 @@ def advise(message: str, forced_persona: str = "", answers: str = "",
     flow.kickoff(inputs={"message": message, "forced_persona": forced_persona,
                          "answers": answers, "force": force, "account": account})
     s = flow.state
+
+    def _attach_unknown(out: dict) -> dict:
+        if s.unknown_cves and out.get("status") != "unknown_cve":
+            out["unknown_cves"] = s.unknown_cves
+            out["message_warning"] = (
+                f"Dropped unknown CVE(s) not in Red Hat's database: "
+                f"{', '.join(s.unknown_cves)}.")
+        elif s.unknown_cves:
+            out["unknown_cves"] = s.unknown_cves
+        return out
+
     if not s.intake.on_topic:
-        return {"intake": s.intake.model_dump(), "status": "off_topic", "advice": None,
+        return _attach_unknown({"intake": s.intake.model_dump(), "status": "off_topic",
+                "advice": None,
                 "message": ("I can only help with security vulnerability mitigation — "
                             "e.g. a CVE you can't patch yet and need non-disruptive options "
                             "for. Ask me about a vulnerability, CVE, or hardening on your "
-                            "Red Hat platform.")}
+                            "Red Hat platform.")})
+    # Unknown-CVE fast path returned as a single gate question (Flow-safe need_info).
+    if (not s.gate.sufficient and s.gate.questions
+            and (s.gate.questions[0].key or "") == "cve_unknown"):
+        unk = s.unknown_cves or find_cves(message)
+        return _attach_unknown({
+            "intake": s.intake.model_dump(), "status": "unknown_cve", "advice": None,
+            "unknown_cves": unk,
+            "message": s.gate.questions[0].question or unknown_cve_message(unk),
+        })
+    if isinstance(s.result, dict) and s.result.get("unknown_cve"):
+        return _attach_unknown({
+            "intake": s.intake.model_dump(), "status": "unknown_cve", "advice": None,
+            "unknown_cves": s.result.get("unknown_cves") or s.unknown_cves,
+            "message": s.result.get("message") or unknown_cve_message(
+                s.result.get("unknown_cves") or s.unknown_cves or []),
+        })
     if not s.gate.sufficient:
-        return {"intake": s.intake.model_dump(), "status": "need_info", "advice": None,
+        return _attach_unknown({"intake": s.intake.model_dump(), "status": "need_info",
+                "advice": None,
                 "missing": s.gate.missing,
                 "questions": [q.model_dump() for q in s.gate.questions],
-                "answers": s.answers}
+                "answers": s.answers})
     if isinstance(s.result, dict) and s.result.get("needs_cve"):
-        return {"intake": s.intake.model_dump(), "status": "need_cve", "advice": None,
+        return _attach_unknown({"intake": s.intake.model_dump(), "status": "need_cve",
+                "advice": None,
                 "message": ("I couldn't determine a specific CVE from your request. Please "
                             "give me a CVE id (format CVE-YYYY-NNNN) — or name the exact "
-                            "product/package so I can look one up.")}
+                            "product/package so I can look one up.")})
     if isinstance(s.result, dict) and s.result.get("knowledge_base_unavailable"):
-        return {"intake": s.intake.model_dump(), "status": "knowledge_base_unavailable",
-                "advice": None, "message": s.result["message"]}
+        return _attach_unknown({"intake": s.intake.model_dump(),
+                "status": "knowledge_base_unavailable",
+                "advice": None, "message": s.result["message"]})
     if s.result is None:
-        return {"intake": s.intake.model_dump(), "status": "error", "advice": None,
-                "message": "advice flow completed without a result"}
+        return _attach_unknown({"intake": s.intake.model_dump(), "status": "error",
+                "advice": None,
+                "message": "advice flow completed without a result"})
     out = {"intake": s.intake.model_dump(), "status": "ok", "advice": s.result,
             "account": s.account_view, "answers": s.answers}
-    queue = remaining_cves(message, s.intake.cve or "")
+    dropped = set(s.unknown_cves or [])
+    queue = [c for c in remaining_cves(message, s.intake.cve or "") if c not in dropped]
     if queue:
         out["cve_queue"] = queue
-    return out
+    return _attach_unknown(out)

@@ -1,4 +1,4 @@
-"""Harvest gate-shaped answers from David's opening prose (no LLM).
+"""Harvest gate-shaped answers (no LLM).
 
 Primary customers often state freeze windows, SELinux, exposure, etc. in the first
 message. Turn those into the same ``[key] question: value`` lines the UI posts so
@@ -173,3 +173,30 @@ def which_cve_answer_line(cve: str) -> str:
     """Pre-answer the multi-CVE radio so the next advise run skips which_cve."""
     return (f"[which_cve] You named more than one CVE — which should we analyze first?: "
             f"{(cve or '').strip().upper()}")
+
+
+def _answer_values(answers: str) -> str:
+    """Join values after the first ':' on each answer line (not question prose)."""
+    return " ".join(
+        line.split(":", 1)[-1]
+        for line in (answers or "").splitlines() if ":" in line
+    ).upper()
+
+
+def select_cve(message: str, answers: str = "", named: list[str] | None = None) -> str | None:
+    """Pick the CVE to analyze from the customer message (+ gate answers).
+
+    Returns:
+      - the sole CVE named in the message, or the multi-CVE radio pick
+      - None if 2+ CVEs are named and none has been picked yet (ask which_cve)
+      - "" if the message names no CVE (caller may research)
+
+    Pass ``named`` to use a pre-filtered list (e.g. after dropping RH-unknown ids).
+    """
+    named = list(named) if named is not None else find_cves(message)
+    if not named:
+        return ""
+    if len(named) == 1:
+        return named[0]
+    picked = next((c for c in named if c in _answer_values(answers)), "")
+    return picked or None

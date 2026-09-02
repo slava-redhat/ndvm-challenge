@@ -1,5 +1,5 @@
 """Harvest + gate sanitize + CVE queue (no LLM)."""
-from harvest import (harvest_answers, merge_answers, remaining_cves,
+from harvest import (harvest_answers, merge_answers, remaining_cves, select_cve,
                      which_cve_answer_line)
 from models import ClarifyQuestion, Sufficiency
 from crew import _sanitize_gate_questions
@@ -81,6 +81,19 @@ def test_harvest_common_controls():
     assert "[exposure]" in h2
 
 
+def test_select_cve_multi_needs_pick_then_pins():
+    msg = ("CVE-2026-84715 and CVE-2023-3390 is flagged on my RHEL 8 fleet. "
+           "I can't reboot until the quarter-end maintenance window.")
+    assert select_cve(msg, "") is None
+    answers = which_cve_answer_line("CVE-2023-3390")
+    assert select_cve(msg, answers) == "CVE-2023-3390"
+
+
+def test_select_cve_single_named_pins_without_answers():
+    assert select_cve("Mitigate CVE-2023-3390 on RHEL 8 without reboot", "") == "CVE-2023-3390"
+    assert select_cve("no identifier here", "") == ""
+
+
 if __name__ == "__main__":
     test_harvest_freeze_and_selinux()
     test_merge_keeps_first_key()
@@ -88,4 +101,6 @@ if __name__ == "__main__":
     test_sanitize_drops_harvested_keys()
     test_which_cve_answer_line_pins_pick()
     test_harvest_common_controls()
+    test_select_cve_multi_needs_pick_then_pins()
+    test_select_cve_single_named_pins_without_answers()
     print("ok")
