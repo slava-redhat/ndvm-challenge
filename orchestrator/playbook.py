@@ -11,25 +11,56 @@ Templates are authored as literal strings so Ansible's Jinja ({{ }}) survives
 verbatim and no YAML serializer / dependency is needed. Parameters are injected
 with __TOKEN__ replacement (no clash with {{ }} or shell $).
 """
+import re
+
+
+# The Red Hat Insights Remediations playbook disclaimer, verbatim, so NDVM's
+# output reads like a real Insights playbook (envelope only — NDVM does not
+# implement Insights' cryptographic playbook signing; see the footer).
+_DISCLAIMER = (
+    "# Red Hat Insights has recommended one or more actions for you, a system administrator, to review and if you\n"
+    "# deem appropriate, deploy on your systems running Red Hat software. Based on the analysis, we have automatically\n"
+    "# generated an Ansible Playbook for you. Please review and test the recommended actions and the Playbook as\n"
+    "# they may contain configuration changes, updates, reboots and/or other changes to your systems. Red Hat is not\n"
+    "# responsible for any adverse outcomes related to these recommendations or Playbooks."
+)
+
+
+def _scaffold_note(template_id):
+    """The one extra trust notice a non-curated (scaffold) playbook needs: it is
+    a documented-steps checklist, not tested module calls."""
+    if template_id != "scaffold":
+        return ""
+    return ("# NOTE: documented-steps scaffold — each task records a manual step for review,\n"
+            "#       not a tested module call. Turn steps into real tasks before automating.")
+
+
 def _header(title, cve, fix_state, rhsa, product, version, sources, template_id):
+    """Wrap the play in the Red Hat Insights Remediations playbook envelope
+    (disclaimer + description/identifier header + NDVM footer), rendered in
+    process. Ported from that service's format; NDVM is NOT signing it."""
     fixed = f" (fix: {rhsa})" if rhsa else ""
     # version is often already embedded in product ("...Linux 9") — don't repeat it
     parts = [product] + ([version] if version and version not in (product or "") else [])
     prod = " ".join(x for x in parts if x).strip() or "the affected host(s)"
     src = "\n".join(f"#   - {u}" for u in (sources or [])) or "#   - (none)"
-    manual = "" if template_id != "scaffold" else (
-        "# NOTE: documented-steps scaffold — each task records a manual step for review,\n"
-        "#       not a tested module call. Turn steps into real tasks before automating.\n")
+    identifier = f"{cve},{template_id or 'mitigation'}" if cve else "unknown"
+    note = _scaffold_note(template_id)
+    manual = f"{note}\n" if note else ""
     return (
-        f"# Non-disruptive mitigation for {cve or 'the reported CVE'}{fixed}\n"
-        f"# Option: {title}\n"
+        "---\n"
+        f"{_DISCLAIMER}\n"
+        f"# {title or 'Mitigation'} for {cve or 'the reported CVE'}{fixed}\n"
+        f"# Identifier: ({identifier})\n"
+        f"# Version: {version or fix_state or 'unknown'}\n"
         f"# Product: {prod}   |   Red Hat fix_state: {fix_state or 'unknown'}\n"
         f"# Sources:\n{src}\n"
         f"#\n"
-        f"# REVIEW before running. Fill the vars below, then dry-run first:\n"
-        f"#   ansible-playbook mitigation.yml --check --diff\n"
         f"{manual}"
-        f"# Generated deterministically by NDVM — not model-authored.\n"
+        f"# Generated deterministically by NDVM — not model-authored. Rendered in the\n"
+        f"# Red Hat Insights playbook format (adapted) — NOT cryptographically signed\n"
+        f"# by Red Hat Insights. Review before running:\n"
+        f"#   ansible-playbook mitigation.yml --check --diff\n"
     )
 
 
@@ -270,8 +301,8 @@ _RHEL_SERVICE_RESTART = """\
   hosts: "{{ target_hosts | default('all') }}"
   become: true
   vars:
-    affected_package: "PACKAGE"   # FILL IN: the fixed package, e.g. openssh-server
-    affected_service: "SERVICE"   # FILL IN: the unit to restart, e.g. sshd
+    affected_package: "__AFFECTED_PACKAGE__"   # FILL IN if not pre-filled: the fixed package, e.g. openssh-server
+    affected_service: "__AFFECTED_SERVICE__"   # FILL IN if not pre-filled: the unit to restart, e.g. sshd
   tasks:
     - name: Assert the package and service have been set
       ansible.builtin.assert:
@@ -466,9 +497,287 @@ _OS_ACS = """\
         status_code: 200
 """
 
+_RHEL_NFTABLES = """\
+- name: Remove network exposure with nftables for __CVE__
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  vars:
+    blocked_port: "PORT"          # FILL IN: the vulnerable service port, e.g. 8080
+    nft_table: inet ndvm_filter
+  tasks:
+    - name: Assert the port has been set
+      ansible.builtin.assert:
+        that: "'PORT' not in blocked_port"
+        fail_msg: "Set blocked_port to the real service port before running."
+    - name: Ensure the NDVM filter table exists
+      ansible.builtin.command: "nft add table {{ nft_table }}"
+      register: nft_table_add
+      changed_when: nft_table_add.rc == 0
+      failed_when: false
+    - name: Ensure the input chain exists (hook into the base filter)
+      ansible.builtin.command: >-
+        nft add chain {{ nft_table }} input
+        { type filter hook input priority 0 ; policy accept ; }
+      register: nft_chain_add
+      changed_when: nft_chain_add.rc == 0
+      failed_when: false
+    - name: Block inbound access to the vulnerable port (reversible, no app change)
+      ansible.builtin.command: >-
+        nft add rule {{ nft_table }} input tcp dport {{ blocked_port }} drop
+      register: nft_rule_add
+      changed_when: nft_rule_add.rc == 0
+    - name: Persist the ruleset so it survives a reboot
+      ansible.builtin.shell: "nft list ruleset > /etc/sysconfig/nftables.conf"
+      changed_when: true
+"""
+
+_RHEL_BLACKLIST_MODULE = """\
+- name: Unload and blacklist the vulnerable kernel module for __CVE__
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  vars:
+    vulnerable_module: "MODULE"   # FILL IN: kernel module name, e.g. cramfs
+  tasks:
+    - name: Assert the module has been set
+      ansible.builtin.assert:
+        that: vulnerable_module != 'MODULE'
+        fail_msg: "Set vulnerable_module to the module to blacklist before running."
+    - name: Blacklist the module so it cannot load again (survives reboot)
+      ansible.builtin.copy:
+        dest: "/etc/modprobe.d/ndvm-blacklist-{{ vulnerable_module }}.conf"
+        mode: "0644"
+        content: |
+          blacklist {{ vulnerable_module }}
+          install {{ vulnerable_module }} /bin/false
+    - name: Rebuild the initramfs so the blacklist takes effect on next boot
+      ansible.builtin.command: "dracut -f"
+      changed_when: true
+    - name: Unload the module right now if it is currently loaded (no reboot needed)
+      community.general.modprobe:
+        name: "{{ vulnerable_module }}"
+        state: absent
+"""
+
+_RHEL_QUARANTINE = """\
+- name: Quarantine the host to a restricted network zone for __CVE__
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  vars:
+    quarantine_interface: "eth0"   # FILL IN: the interface to move to the drop zone
+  tasks:
+    - name: Assert the interface has been set
+      ansible.builtin.assert:
+        that: quarantine_interface != ''
+        fail_msg: "Set quarantine_interface before running."
+    - name: Move the interface to firewalld's drop zone (blocks all unsolicited traffic)
+      ansible.posix.firewalld:
+        zone: drop
+        interface: "{{ quarantine_interface }}"
+        permanent: true
+        immediate: true
+        state: enabled
+"""
+
+_OCP_EGRESS_POLICY = """\
+- name: Restrict egress from the vulnerable workload for __CVE__
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    namespace: "NAMESPACE"                 # FILL IN
+    pod_selector: {app: "APP_LABEL"}       # FILL IN: labels of the vulnerable pod
+  tasks:
+    - name: Assert target has been set
+      ansible.builtin.assert:
+        that: namespace != 'NAMESPACE'
+        fail_msg: "Set namespace and pod_selector before running."
+    - name: Deny all egress from the vulnerable pod except DNS (attack surface removed)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: ndvm-egress-restrict-__CVE_SLUG__
+            namespace: "{{ namespace }}"
+          spec:
+            podSelector:
+              matchLabels: "{{ pod_selector }}"
+            policyTypes: [Egress]
+            egress:
+              - ports:
+                  - protocol: UDP
+                    port: 53
+"""
+
+_OCP_RESTRICTED_V2 = """\
+- name: Enforce restricted-v2 Pod Security standards for __CVE__
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    namespace: "NAMESPACE"       # FILL IN
+  tasks:
+    - name: Assert target has been set
+      ansible.builtin.assert:
+        that: namespace != 'NAMESPACE'
+        fail_msg: "Set namespace before running."
+    - name: Label the namespace to enforce the restricted-v2 Pod Security standard
+      kubernetes.core.k8s:
+        state: patched
+        kind: Namespace
+        name: "{{ namespace }}"
+        definition:
+          metadata:
+            labels:
+              pod-security.kubernetes.io/enforce: restricted
+              pod-security.kubernetes.io/enforce-version: v2
+              pod-security.kubernetes.io/audit: restricted
+              pod-security.kubernetes.io/warn: restricted
+"""
+
+_OCP_IMAGE_POLICY = """\
+- name: Enforce signed images only for __CVE__
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    namespace: "NAMESPACE"       # FILL IN
+    image_scope: "IMAGE_SCOPE"   # FILL IN: image ref/repo this policy covers
+  tasks:
+    - name: Assert target has been set
+      ansible.builtin.assert:
+        that:
+          - namespace != 'NAMESPACE'
+          - image_scope != 'IMAGE_SCOPE'
+        fail_msg: "Set namespace and image_scope before running."
+    - name: Require cosign-signed images for this scope (rejects the vulnerable/unsigned image)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: policy.sigstore.dev/v1beta1
+          kind: ClusterImagePolicy
+          metadata:
+            name: ndvm-require-signed-__CVE_SLUG__
+          spec:
+            images:
+              - glob: "{{ image_scope }}"
+            authorities:
+              - keyless:
+                  url: https://fulcio.sigstore.dev
+"""
+
+_OCP_CUT_ROUTE = """\
+- name: Cut external Route/Service exposure for __CVE__
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    namespace: "NAMESPACE"   # FILL IN
+    route_name: "ROUTE"      # FILL IN: the Route exposing the vulnerable service
+  tasks:
+    - name: Assert target has been set
+      ansible.builtin.assert:
+        that:
+          - namespace != 'NAMESPACE'
+          - route_name != 'ROUTE'
+        fail_msg: "Set namespace and route_name before running."
+    - name: Delete the Route (removes external exposure; internal Service still reachable)
+      kubernetes.core.k8s:
+        state: absent
+        kind: Route
+        api_version: route.openshift.io/v1
+        name: "{{ route_name }}"
+        namespace: "{{ namespace }}"
+"""
+
+_OCP_QUARANTINE_NODES = """\
+- name: Quarantine nodes hosting the vulnerable workload for __CVE__
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    node_name: "NODE"   # FILL IN: node to cordon/taint
+  tasks:
+    - name: Assert the node has been set
+      ansible.builtin.assert:
+        that: node_name != 'NODE'
+        fail_msg: "Set node_name before running."
+    - name: Cordon the node so no new pods are scheduled on it
+      kubernetes.core.k8s:
+        state: patched
+        kind: Node
+        name: "{{ node_name }}"
+        definition:
+          spec:
+            unschedulable: true
+    - name: Taint the node so existing pods without an explicit toleration evict
+      kubernetes.core.k8s:
+        state: patched
+        kind: Node
+        name: "{{ node_name }}"
+        definition:
+          spec:
+            taints:
+              - key: ndvm.io/quarantine
+                value: __CVE_SLUG__
+                effect: NoExecute
+"""
+
+_OCP_ROLL_IMAGE = """\
+- name: Roll a fixed image via a rolling update for __CVE__
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    namespace: "NAMESPACE"           # FILL IN
+    deployment: "DEPLOYMENT"         # FILL IN: the Deployment to roll
+    container_name: "CONTAINER"      # FILL IN: the container to update
+    fixed_image: "IMAGE:FIXED_TAG"   # FILL IN: the fixed image ref (with digest/tag)
+  tasks:
+    - name: Assert target has been set
+      ansible.builtin.assert:
+        that:
+          - namespace != 'NAMESPACE'
+          - deployment != 'DEPLOYMENT'
+          - fixed_image != 'IMAGE:FIXED_TAG'
+        fail_msg: "Set namespace, deployment, container_name and fixed_image before running."
+    - name: Roll to the fixed image with a controlled, no-reboot rolling update
+      kubernetes.core.k8s:
+        state: patched
+        kind: Deployment
+        name: "{{ deployment }}"
+        namespace: "{{ namespace }}"
+        definition:
+          spec:
+            strategy:
+              type: RollingUpdate
+              rollingUpdate:
+                maxUnavailable: 1
+                maxSurge: 1
+            template:
+              spec:
+                containers:
+                  - name: "{{ container_name }}"
+                    image: "{{ fixed_image }}"
+    - name: Wait for the rollout to complete before declaring the CVE closed
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        name: "{{ deployment }}"
+        namespace: "{{ namespace }}"
+      register: rollout
+      until: >-
+        rollout.resources[0].status.updatedReplicas | default(0) ==
+        rollout.resources[0].spec.replicas | default(1)
+      retries: 30
+      delay: 10
+"""
+
 # platform, action_type -> template. Title keywords disambiguate the OpenShift
 # 'config' options (SCC vs admission policy). Entries keyed by catalog_id are
-# selected directly by build_playbook when the recommended option matches.
+# selected directly by build_playbook when the recommended option matches — every
+# non-VEX catalog_id maps directly here so a curated catalog option NEVER falls to
+# the debug-only scaffold, even if the caller's platform classification is wrong.
 _TEMPLATES = {
     "rhel_kpatch": _RHEL_KPATCH,
     "rhel_selinux": _RHEL_SELINUX,
@@ -479,7 +788,8 @@ _TEMPLATES = {
     "os_scale": _OS_SCALE,
     "os_admission": _OS_ADMISSION,
     "vex": _VEX,
-    # keyed by catalog_id (was scaffold before):
+    # keyed by catalog_id (data/mitigations/{rhel,openshift}.yaml `id:` fields) —
+    # every curated option gets its own real, tested template, not a scaffold.
     "rhel_service_restart": _RHEL_SERVICE_RESTART,
     "rhel_systemd_harden": _RHEL_SYSTEMD_HARDEN,
     "rhel_openssh_harden": _RHEL_SSHD,
@@ -487,7 +797,24 @@ _TEMPLATES = {
     "rhel_crypto_policy": _RHEL_CRYPTO,
     "rhel_container_runtime": _RHEL_CONTAINER_RUNTIME,
     "rhel_insights_remediation": _RHEL_INSIGHTS,
+    "rhel_nftables": _RHEL_NFTABLES,
+    "rhel_disable_module": _RHEL_DISABLE,
+    "rhel_blacklist_module": _RHEL_BLACKLIST_MODULE,
+    "rhel_openssl_isolate": _RHEL_FIREWALLD,
+    "rhel_quarantine": _RHEL_QUARANTINE,
     "ocp_acs_policy": _OS_ACS,
+    "ocp_networkpolicy": _OS_NETWORKPOLICY,
+    "ocp_egress_policy": _OCP_EGRESS_POLICY,
+    "ocp_scc": _OS_SCC,
+    "ocp_restricted_v2": _OCP_RESTRICTED_V2,
+    "ocp_admission_block": _OS_ADMISSION,
+    "ocp_image_policy": _OCP_IMAGE_POLICY,
+    "ocp_cut_route": _OCP_CUT_ROUTE,
+    "ocp_scale_zero": _OS_SCALE,
+    "ocp_pause_operator": _OS_SCALE,
+    "ocp_default_deny": _OS_NETWORKPOLICY,
+    "ocp_quarantine_nodes": _OCP_QUARANTINE_NODES,
+    "ocp_roll_image": _OCP_ROLL_IMAGE,
 }
 
 
@@ -562,25 +889,89 @@ def _slug(cve):
     return (cve or "cve").lower().replace(":", "-").replace(" ", "")
 
 
-def build_playbook(*, platform, action_type, title, steps, source_urls,
-                   cve="", fix_state="", rhsa="", product="", version="",
-                   catalog_id="") -> str:
-    """Recommended option -> a valid Ansible playbook string (header + one play).
+# Well-known RPM package -> the systemd unit it ships, for the handful of
+# packages whose service name doesn't match the package name. Deliberately
+# small and conservative: if a package isn't listed here, we leave the
+# service as a FILL-IN rather than guess wrong — a bad guess is worse than an
+# honest blank the operator must confirm.
+_KNOWN_SERVICES = {
+    "openssh-server": "sshd",
+    "openssh": "sshd",
+    "bind": "named",
+    "chrony": "chronyd",
+    "ntp": "ntpd",
+    "postfix": "postfix",
+    "httpd": "httpd",
+    "nginx": "nginx",
+    "rsyslog": "rsyslog",
+    "tuned": "tuned",
+    "NetworkManager": "NetworkManager",
+}
 
-    Deterministic and grounded: curated catalog options render a real, tested
-    template; everything else renders a scaffold of the option's documented steps.
-    Never returns invalid YAML and never invents concrete values it can't know —
-    those surface as FILL-IN vars guarded by an assert.
 
-    catalog_id, when it names a curated template, selects it directly — the robust
-    path (stable ids), falling back to the platform/action_type/title heuristic.
-    """
+def _package_from_nvra(nvra):
+    """Derive the plain package name from a Red Hat NVR/NVRA string, e.g.
+    "openssh-server-8.9p1-3.el9.x86_64" -> "openssh-server",
+    "kernel-0:4.18.0-477.27.1.el8_8" -> "kernel". Returns '' if it doesn't
+    look like an NVR at all (never guesses)."""
+    s = (nvra or "").strip()
+    if not s:
+        return ""
+    tokens = s.split("-")
+    for i in range(1, len(tokens)):
+        if re.match(r"^\d", tokens[i]) or re.match(r"^\d+:", tokens[i]):
+            return "-".join(tokens[:i])
+    return ""
+
+
+def _service_for_package(pkg):
+    """Real, known data only: a package's systemd unit if (and only if) we
+    have a confident mapping — else ''. Never invents one."""
+    return _KNOWN_SERVICES.get(pkg, "")
+
+
+def _build_play(*, platform, action_type, title, steps, cve, catalog_id, fixed_nvra=""):
+    """Resolve + render just the play body (no header). Returns (template_id, play_yaml)."""
     tid = catalog_id if catalog_id in _TEMPLATES else _resolve(platform, action_type, title)
     play = _scaffold(title, steps, cve) if tid == "scaffold" else _TEMPLATES[tid]
     # Substitute on both paths — the scaffold bakes __CVE__ into its play name too.
     play = play.replace("__CVE_SLUG__", _slug(cve)).replace("__CVE__", cve or "the reported CVE")
+    if tid == "rhel_service_restart":
+        pkg = _package_from_nvra(fixed_nvra)
+        svc = _service_for_package(pkg) if pkg else ""
+        play = (play.replace("__AFFECTED_PACKAGE__", pkg or "PACKAGE")
+                    .replace("__AFFECTED_SERVICE__", svc or "SERVICE"))
+    return tid, play
+
+
+def build_playbook(*, platform, action_type, title, steps, source_urls,
+                   cve="", fix_state="", rhsa="", product="", version="",
+                   catalog_id="", fixed_nvra="") -> str:
+    """Recommended option -> a valid Ansible playbook string (Insights-format
+    header + one play).
+
+    Deterministic and grounded: curated catalog options render a real, tested
+    template; everything else renders a scaffold of the option's documented
+    steps. The whole document is rendered in process in the Red Hat Insights
+    Remediations playbook format (one curated template per known issue), using
+    NDVM's own non-disruptive catalog instead of upstream's dnf-upgrade-only
+    CVE resolution. Never returns invalid YAML and never invents concrete
+    values it can't know — those surface as FILL-IN vars guarded by an assert.
+
+    catalog_id, when it names a curated template, selects it directly — the
+    robust path (stable ids), falling back to the platform/action_type/title
+    heuristic. The one exception to "no invented values": fixed_nvra, when it
+    names a package NDVM has grounded evidence for (the pipeline's own
+    VulnFinding, never an LLM guess), lets the rhel_service_restart template
+    pre-fill the real affected_package/affected_service instead of a FILL-IN
+    placeholder — still only when the service mapping is known with confidence
+    (see _service_for_package).
+    """
+    tid, play = _build_play(platform=platform, action_type=action_type, title=title,
+                            steps=steps, cve=cve, catalog_id=catalog_id,
+                            fixed_nvra=fixed_nvra)
     header = _header(title, cve, fix_state, rhsa, product, version, source_urls, tid)
-    return header + "---\n" + play
+    return header + "\n" + play
 
 
 if __name__ == "__main__":
@@ -639,6 +1030,28 @@ if __name__ == "__main__":
         assert "ansible.builtin.debug" not in pb or cid == "rhel_crypto_policy", f"{cid}: debug-only"
         assert "CVE-2024-6387" in pb and "__CVE__" not in pb, f"{cid}: CVE token"
         all_pbs.append(pb)
+
+    # fixed_nvra, when it names a package we confidently know the systemd unit for,
+    # pre-fills rhel_service_restart's affected_package/affected_service instead of
+    # leaving FILL-IN placeholders (regreSSHion / CVE-2024-6387 real-world case).
+    pinned_pb = build_playbook(platform="rhel", action_type="config",
+                            title="Restart only the affected service after a userspace fix lands",
+                            steps=[], source_urls=["https://access.redhat.com/x"],
+                            cve="CVE-2024-6387", product="RHEL", version="9",
+                            catalog_id="rhel_service_restart",
+                            fixed_nvra="openssh-server-8.7p1-38.el9_4.2")
+    assert 'affected_package: "openssh-server"' in pinned_pb, "fixed_nvra pin (package) failed"
+    assert 'affected_service: "sshd"' in pinned_pb, "fixed_nvra pin (service) failed"
+    assert '"PACKAGE"' not in pinned_pb and '"SERVICE"' not in pinned_pb, "pin left a FILL-IN placeholder"
+    all_pbs.append(pinned_pb)
+    # ...and without a known fixed_nvra, it still honestly falls back to FILL-IN.
+    unpinned_pb = build_playbook(platform="rhel", action_type="config",
+                            title="Restart only the affected service after a userspace fix lands",
+                            steps=[], source_urls=["https://access.redhat.com/x"],
+                            cve="CVE-2024-6387", product="RHEL", version="9",
+                            catalog_id="rhel_service_restart")
+    assert 'affected_package: "PACKAGE"' in unpinned_pb and 'affected_service: "SERVICE"' in unpinned_pb
+    all_pbs.append(unpinned_pb)
 
     # scaffold must NOT leak a curated module; curated ones must NOT be a debug-only list
     sc = build_playbook(platform="other", action_type="x", title="z", steps=["a"],

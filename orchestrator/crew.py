@@ -792,7 +792,8 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
             platform=result.platform, action_type=rec.action_type, title=rec.title,
             steps=rec.steps, source_urls=rec.source_urls, cve=v.cve_id,
             fix_state=v.fix_state, rhsa=v.rhsa or "", product=intake.product,
-            version=intake.version, catalog_id=rec.catalog_id)
+            version=intake.version, catalog_id=rec.catalog_id,
+            fixed_nvra=pinned.fixed_nvra or "")
     else:
         rec = None
     pkg = build_decision_package(
