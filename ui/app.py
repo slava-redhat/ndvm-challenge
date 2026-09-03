@@ -475,7 +475,7 @@ else:
         disabled=bool(pending),
     )
 
-MAX_ROUNDS = 2  # ponytail: stop questioning after 2 rounds and advise anyway (force)
+MAX_ROUNDS = 4  # keep probing across more rounds until the case is understood, then force
 
 
 def run_with_progress(message, persona, answers="", force=False, account="", round=0):
@@ -698,12 +698,13 @@ if pending:
             for key, label, values in picks
         )
         merged = (pending["answers"] + "\n" + new).strip()
-        # CVE disambiguation is not a sufficiency round — keep budget for real gate Qs.
-        only_cve_pick = (
+        # Mandatory, deterministic picks (which CVE / which platform) are not sufficiency
+        # rounds and must never be force-skipped — keep the budget for real gate questions.
+        mandatory_pick = (
             len(pending["questions"]) == 1
-            and (pending["questions"][0].get("key") or "") == "which_cve"
+            and (pending["questions"][0].get("key") or "") in ("which_cve", "platform")
         )
-        rnd = pending["round"] if only_cve_pick else pending["round"] + 1
+        rnd = pending["round"] if mandatory_pick else pending["round"] + 1
         force = rnd > MAX_ROUNDS  # ran out of rounds: advise with what we have
         data = run_with_progress(pending["orig_msg"], pending["persona"], merged, force,
                                  pending.get("account", ""), round=rnd)

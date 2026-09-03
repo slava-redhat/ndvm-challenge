@@ -178,6 +178,12 @@ def _best_match(rows: list, product_hint: str):
     return min(hits, key=lambda r: len(r.get("product_name") or ""))
 
 
+def _pkg_base(nvra: str) -> str:
+    """NVRA -> package base name, e.g. 'kernel-0:4.18.0-...el8' -> 'kernel'."""
+    name = (nvra or "").split(":", 1)[0]
+    return re.sub(r"-\d.*$", "", name).strip("-")
+
+
 def analyze_cve_json(data: dict, product_hint: str = "") -> dict:
     """Red Hat CVE JSON -> VulnFinding-shaped dict for a given product."""
     cve_id = data.get("name", "")
@@ -229,6 +235,25 @@ def analyze_cve_json(data: dict, product_hint: str = "") -> dict:
             else:
                 fix_state = sorted(all_states)[0]
 
+    # Authoritative affected packages across ALL products (not just the matched erratum) —
+    # so a kernel CVE is recognised as 'kernel' even when the product's fixed package name
+    # doesn't literally contain 'kernel'. Drives component gating (kpatch etc.).
+    affected_pkgs: set[str] = set()
+    for st in states:
+        n = (st.get("package_name") or "").strip().lower()
+        if n:
+            affected_pkgs.add(n)
+    for rel in releases:
+        base = _pkg_base((rel.get("package") or "").strip().lower())
+        if base:
+            affected_pkgs.add(base)
+
+    # Attack mechanism (not fix-state prose): CWE + bugzilla/details drive attack-class gating.
+    cwe = (data.get("cwe") or "").strip()
+    bz = ((data.get("bugzilla") or {}).get("description") or "").strip()
+    details = " ".join(d for d in (data.get("details") or []) if d).strip()
+    description = " ".join(x for x in (bz, details) if x)[:500]
+
     ndvm_applies = ndvm_applies_for(fix_state)
     if fix_state == "Not affected":
         rationale = "Red Hat marks this product not affected — the mitigation is to do nothing (evidence: VEX)."
@@ -247,6 +272,9 @@ def analyze_cve_json(data: dict, product_hint: str = "") -> dict:
         "ndvm_applies": ndvm_applies,
         "rhsa": rhsa,
         "fixed_nvra": fixed_nvra,
+        "cwe": cwe,
+        "description": description,
+        "affected_packages": sorted(affected_pkgs)[:30],
         "rationale": rationale,
         "source_urls": [CVE_PAGE.format(cve=cve_id)] if cve_id else [],
     }

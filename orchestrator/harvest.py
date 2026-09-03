@@ -121,6 +121,61 @@ _HARVEST_RULES: list[tuple[str, str, list[tuple[re.Pattern[str], str]]]] = [
 ]
 
 
+# Strong, unambiguous OpenShift/Kubernetes signals the user wrote themselves.
+# Deliberately NOT 'cluster', 'node', 'pod' or 'operator' — those appear in RHEL HA
+# and general prose, so treating them as a signal would be guessing, not reading.
+_OCP_SIGNALS = ("openshift", "ocp", "kubernetes", "k8s", "rhcos", "kubelet",
+                "machineconfig", "container platform", "cri-o", "crio", "oc adm",
+                "oc apply", "oc get")
+# Unambiguous RHEL host-plane signals.
+_RHEL_SIGNALS = ("rhel", "red hat enterprise", "enterprise linux",
+                 " el7", " el8", " el9", ".el7", ".el8", ".el9")
+
+
+def _platform_from_answer(answers: str) -> str | None:
+    """Deterministically read an explicit platform CHOICE the user made in the gate.
+
+    None when unanswered/blank. An explicit 'Other' choice maps to 'other' (search
+    both menus) — that is the user's own selection, not a guess."""
+    for line in (answers or "").splitlines():
+        m = re.match(r"^\[platform\]\s*[^:]*:\s*(.+)$", line.strip(), re.I)
+        if not m:
+            continue
+        val = m.group(1).strip().lower()
+        if not val or val in ("(no answer)", "not sure"):
+            return None
+        if any(t in val for t in _OCP_SIGNALS):
+            return "openshift"
+        if "rhel" in val or "enterprise linux" in val:
+            return "rhel"
+        return "other"
+    return None
+
+
+def detect_platform(message: str, answers: str = "") -> str | None:
+    """100% deterministic platform — NEVER the LLM router's guess.
+
+    The platform selects the ENTIRE mitigation menu (RHEL host plane vs OpenShift
+    workload plane); a wrong pick silently hides the right answer (e.g. kpatch for a
+    kernel CVE). So it is read only from what the user actually stated:
+      - an explicit gate CHOICE, else
+      - an unambiguous signal in the message (OpenShift XOR RHEL).
+    Returns None when the message is unclear (neither signal, or both) so the caller
+    ASKS the user instead of guessing.
+    """
+    chosen = _platform_from_answer(answers)
+    if chosen:
+        return chosen
+    low = (message or "").lower()
+    ocp = any(t in low for t in _OCP_SIGNALS)
+    rhel = any(t in low for t in _RHEL_SIGNALS)
+    if ocp and not rhel:
+        return "openshift"
+    if rhel and not ocp:
+        return "rhel"
+    return None
+
+
 def _answered_keys(answers: str) -> set[str]:
     return {
         m.group(1).strip().lower()
@@ -200,3 +255,25 @@ def select_cve(message: str, answers: str = "", named: list[str] | None = None) 
         return named[0]
     picked = next((c for c in named if c in _answer_values(answers)), "")
     return picked or None
+
+
+if __name__ == "__main__":
+    # Platform is deterministic and NEVER guessed: unclear -> None (caller asks).
+    # The router LLM's opinion is irrelevant — detect_platform never takes it.
+    assert detect_platform("CVE-2026-31431 kernel issue, can't reboot") is None
+    assert detect_platform("our OpenShift cluster is on CVE-2026-31431") == "openshift"
+    assert detect_platform("kubernetes workload hit by CVE-x") == "openshift"
+    assert detect_platform("RHEL 9 host, kernel CVE") == "rhel"
+    assert detect_platform("plain question") is None
+    # 'cluster'/'node'/'pod' alone are too weak to be a signal -> ask, don't guess.
+    assert detect_platform("my cluster node has a kernel bug") is None
+    # Both signals present is ambiguous -> ask.
+    assert detect_platform("openshift on rhel worker") is None
+    # An explicit gate choice is deterministic and wins over the (unclear) message.
+    q = "[platform] Which platform is this on?: Red Hat OpenShift"
+    assert detect_platform("kernel issue", q) == "openshift"
+    q2 = "[platform] Which platform is this on?: Red Hat Enterprise Linux (RHEL) host"
+    assert detect_platform("kernel issue", q2) == "rhel"
+    assert detect_platform("kernel issue", "[platform] x: (no answer)") is None
+    assert harvest_answers("we run SELinux enforcing and can't reboot until quarter-end")
+    print("ok")

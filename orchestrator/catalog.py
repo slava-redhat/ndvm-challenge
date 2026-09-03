@@ -8,7 +8,59 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
+from control_matrix import infer_attack_classes, lookup as _matrix_lookup
 from models import MitigationOption, VulnFinding
+
+# Map a catalog option to a control_matrix control family, so an option is checked
+# against the CVE's ATTACK CLASS the same way the customer's existing controls are.
+# This catches "control doesn't counter this mechanism" mismatches that the component
+# gate cannot express (e.g. a NetworkPolicy top-ranked for a LOCAL privilege-escalation
+# CVE). Options left unmapped defer to ranking — the matrix has no opinion on:
+#   - vendor-fix delivery / version-blocking (ocp_roll_image, *_admission/image/acs,
+#     rhel_service_restart, rhel_insights_remediation) — that is the component/plane
+#     question, gated by components/exclude_components, not the attack class;
+#   - removing the vulnerable code path (scale-to-zero, pause operator, disable/blacklist
+#     module) — effective against any class it reaches.
+_OPTION_CONTROL: dict[str, str] = {
+    # network-surface controls: only help network-reachable attack classes
+    "ocp_networkpolicy":  "network_segmentation",
+    "ocp_egress_policy":  "network_segmentation",
+    "ocp_cut_route":      "firewall",
+    "ocp_default_deny":   "network_segmentation",
+    "ocp_quarantine_nodes": "network_segmentation",
+    "rhel_firewalld":     "firewall",
+    "rhel_nftables":      "firewall",
+    "rhel_openssl_isolate": "firewall",
+    "rhel_quarantine":    "network_segmentation",
+    "rhel_http_surface":  "firewall",
+    # confinement controls: contain, don't fix; useless against classes SELinux can't touch
+    "ocp_scc":            "selinux_enforcing",
+    "ocp_restricted_v2":  "selinux_enforcing",
+    "ocp_seccomp":        "selinux_enforcing",
+    "rhel_selinux":       "selinux_enforcing",
+    "rhel_systemd_harden": "selinux_enforcing",
+    "rhel_container_runtime": "selinux_enforcing",
+    # kernel live patch: the actual in-place kernel fix
+    "rhel_kpatch":        "kernel_livepatch",
+    # crypto policy: only weak-crypto classes
+    "rhel_crypto_policy": "fips_mode",
+}
+
+
+def attack_class_applicable(catalog_id: str, attack_classes: list[str]) -> bool:
+    """False only when the matrix says this option's control counters NONE of the CVE's
+    attack classes. Unmapped option, no attack class, or no matrix opinion -> True (defer).
+
+    Best-case across classes: an option is kept if it helps with even one relevant class
+    (a firewall stays for a remote-DoS kernel CVE but is dropped for a local privesc one)."""
+    control = _OPTION_CONTROL.get(catalog_id)
+    if not control or not attack_classes:
+        return True
+    verdicts = [v for v in (_matrix_lookup(control, ac) for ac in attack_classes)
+                if v is not None]
+    if not verdicts:
+        return True
+    return any(v != "not_mitigated" for v in verdicts)
 
 # Heuristic package-class tokens for applicability (not a full CPE matcher).
 _COMPONENT_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
@@ -23,15 +75,20 @@ _COMPONENT_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
 
 
 def infer_components(pinned: VulnFinding, product: str = "",
-                     platform: str = "") -> set[str]:
-    """Best-effort component classes from Red Hat finding + product/platform."""
+                     platform: str = "", message: str = "") -> set[str]:
+    """Component classes from the AUTHORITATIVE Red Hat affected-package list, the
+    finding, and what the user actually said (the message) — so e.g. a kernel CVE is
+    recognised as 'kernel' (enabling kpatch) even when the product's fixed package name
+    doesn't contain 'kernel'. The message is the user's own words, not a guess."""
     blob = " ".join(
         x for x in (
+            " ".join(pinned.affected_packages or []),
             pinned.fixed_nvra or "",
             pinned.rationale or "",
             pinned.cve_id or "",
             product or "",
             platform or "",
+            message or "",
         ) if x
     ).lower()
     found = {name for name, tokens in _COMPONENT_PATTERNS
@@ -57,6 +114,10 @@ def option_from_hit(hit: dict) -> MitigationOption | None:
     steps = meta.get("steps") or []
     if isinstance(steps, str):
         steps = [steps]
+    # A colon-space in an unquoted YAML step parses as a dict — coerce so one malformed
+    # catalog row degrades gracefully instead of 500-ing the whole advise flow.
+    steps = [s if isinstance(s, str) else " ".join(f"{k}: {v}" for k, v in s.items())
+             if isinstance(s, dict) else str(s) for s in steps]
     url = (hit.get("source_url") or meta.get("source_url") or "").strip()
     return MitigationOption(
         catalog_id=cid,
@@ -96,16 +157,25 @@ def _applies(meta: dict, components: set[str], fix_state: str) -> bool:
 
 
 def filter_applicable_hits(hits: Iterable[dict], pinned: VulnFinding,
-                           product: str = "", platform: str = "") -> list[dict]:
-    components = infer_components(pinned, product, platform)
-    out = []
+                           product: str = "", platform: str = "",
+                           message: str = "") -> list[dict]:
+    components = infer_components(pinned, product, platform, message)
+    # Attack mechanism from Red Hat: CWE + description, NOT fix-state rationale prose.
+    attack_classes = infer_attack_classes(
+        f"{pinned.description or ''} {pinned.rationale or ''}", pinned.cwe or "")
+    applicable, attack_ok = [], []
     for hit in hits or []:
         meta = hit.get("metadata") or {}
-        if not hit_catalog_id(hit):
+        cid = hit_catalog_id(hit)
+        if not cid:
             continue
-        if _applies(meta, components, pinned.fix_state or "unknown"):
-            out.append(hit)
-    return out
+        if not _applies(meta, components, pinned.fix_state or "unknown"):
+            continue
+        applicable.append(hit)
+        if attack_class_applicable(cid, attack_classes):
+            attack_ok.append(hit)
+    # Fail-safe: never let the attack-class gate empty a menu the component gate accepted.
+    return attack_ok or applicable
 
 
 def materialize_options(hits: Iterable[dict]) -> list[MitigationOption]:
@@ -165,6 +235,18 @@ if __name__ == "__main__":
     kernel = VulnFinding(cve_id="CVE-2023-3390", fix_state="Affected",
                          rationale="kernel privilege escalation")
     assert "kernel" in infer_components(kernel)
+    # Authoritative RH packages drive component gating even when fix-state prose is silent
+    # and the product's fixed package name doesn't contain 'kernel' (the CBIS case).
+    cbis = VulnFinding(cve_id="CVE-2026-31431", fix_state="Fixed",
+                       fixed_nvra="cbis-kmod-6.1-1", affected_packages=["kernel"],
+                       rationale="A fix shipped (RHSA-2026:14926)")
+    assert "kernel" in infer_components(cbis, product="CBIS", platform="rhel")
+    # The user's own words also count: 'kernel issue' in the message infers kernel.
+    bare = VulnFinding(cve_id="CVE-2026-31431", fix_state="Fixed",
+                       rationale="A fix shipped (RHSA-2026:14926)")
+    assert "kernel" not in infer_components(bare, product="CBIS", platform="rhel")
+    assert "kernel" in infer_components(bare, product="CBIS", platform="rhel",
+                                        message="CVE-2026-31431 is a kernel issue")
 
     hit = {"source_url": "https://access.redhat.com/solutions/2206511",
            "text": "kpatch",
@@ -183,6 +265,21 @@ if __name__ == "__main__":
                             "exclude_components": ["kernel"], "description": "dnf + restart"}}
     assert not filter_applicable_hits([restart], kernel)
     assert filter_applicable_hits([restart], pinned)
+
+    # Attack-class gate: a network control is useless against a LOCAL privesc kernel CVE
+    # (dropped), but the kernel live patch that counters privesc is kept.
+    fw = {"source_url": "https://access.redhat.com/solutions/962473", "text": "firewalld",
+          "metadata": {"catalog_id": "rhel_firewalld", "title": "firewalld",
+                       "action_type": "network", "disruption": "low", "effectiveness": 3,
+                       "effort": 1, "scope": "generic", "description": "restrict"}}
+    kept_ids = {hit_catalog_id(h) for h in filter_applicable_hits([hit, fw], kernel)}
+    assert "rhel_kpatch" in kept_ids and "rhel_firewalld" not in kept_ids
+    # Fail-safe: firewall alone (nothing else applies) is NOT dropped to an empty menu.
+    assert filter_applicable_hits([fw], kernel)
+    # A network control SURVIVES for a remotely-reachable kernel DoS (firewall helps DoS).
+    kdos = VulnFinding(cve_id="CVE-2023-0001", fix_state="Affected",
+                       rationale="kernel", description="remote denial of service, kernel crash")
+    assert {hit_catalog_id(h) for h in filter_applicable_hits([hit, fw], kdos)} >= {"rhel_firewalld"}
     bare = {**restart, "metadata": {**restart["metadata"], "scope": "", "components": []}}
     assert not filter_applicable_hits([bare], pinned)
     assert "openshift" in infer_components(pinned, platform="openshift")

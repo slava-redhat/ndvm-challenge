@@ -171,7 +171,63 @@ mitigations:
     effort: 2
     applies_when: fixed image available, rolling update, Deployment
     fix_states: [Fixed]
+    # Containers share the node kernel — an image roll never fixes a kernel CVE.
+    exclude_components: [kernel]
     scope: generic
+    source_url: https://access.redhat.com/products/openshift/
+  - id: ocp_node_update
+    title: Roll fixed nodes via MachineConfig with PodDisruptionBudgets (no cluster outage)
+    action_type: config
+    description: >
+      For a node-plane CVE (kernel or container runtime) the fix lives in RHCOS, not the
+      workload image. The Machine Config Operator applies the fixed node image and reboots
+      nodes one at a time; PodDisruptionBudgets keep the application available, so there is
+      no cluster-wide outage even though individual nodes cycle.
+    disruption: medium
+    effectiveness: 4
+    effort: 3
+    applies_when: node kernel or container-runtime CVE, RHCOS, MachineConfig, rolling node update
+    components: [kernel, runc]
+    fix_states: [Fixed]
+    steps:
+      - Set PodDisruptionBudgets on the affected workloads so drains keep minimum replicas up
+      - Confirm the fixed RHCOS / node image is available for the cluster's release channel
+      - Let the Machine Config Operator roll the update node-by-node (watch with oc get machineconfigpool)
+      - Verify each node returns Ready on the fixed kernel/runtime before the next drains
+    source_url: https://access.redhat.com/products/openshift/
+  - id: ocp_seccomp
+    title: Enforce the RuntimeDefault seccomp profile
+    action_type: config
+    description: >
+      Apply the RuntimeDefault seccomp profile to the affected workloads so the syscalls a
+      kernel or container-escape exploit relies on are blocked, containing the flaw without
+      rebuilding the image or rebooting nodes.
+    disruption: low
+    effectiveness: 3
+    effort: 2
+    applies_when: kernel or container-escape CVE, seccomp, syscall filtering, privileged workload
+    scope: generic
+    steps:
+      - Set securityContext.seccompProfile.type=RuntimeDefault on the pod/deployment
+      - Prefer namespace-wide enforcement via the restricted-v2 Pod Security standard
+      - Roll the workload and confirm it runs without denied-syscall errors
+    source_url: https://access.redhat.com/products/openshift/
+  - id: ocp_cordon_drain
+    title: Shift workloads onto patched/unaffected nodes (cordon & drain)
+    action_type: disable
+    description: >
+      Cordon the vulnerable nodes and drain their pods onto already-patched or unaffected
+      nodes so the workload no longer runs on an exposed kernel/runtime, without a cluster
+      outage — useful while a full node roll is scheduled.
+    disruption: medium
+    effectiveness: 3
+    effort: 2
+    applies_when: node-plane CVE, spare or patched node capacity, cordon, drain
+    scope: generic
+    steps:
+      - oc adm cordon <node> on the affected nodes so no new pods schedule there
+      - oc adm drain <node> --ignore-daemonsets --delete-emptydir-data to move workloads off
+      - Confirm pods rescheduled onto patched/unaffected nodes within their PodDisruptionBudgets
     source_url: https://access.redhat.com/products/openshift/
   - id: ocp_vex_not_affected
     title: Confirm "not affected" via Red Hat VEX

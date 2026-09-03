@@ -773,6 +773,99 @@ _OCP_ROLL_IMAGE = """\
       delay: 10
 """
 
+_OCP_SECCOMP = """\
+- name: Enforce the RuntimeDefault seccomp profile for __CVE__
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    namespace: "NAMESPACE"       # FILL IN
+    workload: "DEPLOYMENT"       # FILL IN: the Deployment to confine
+  tasks:
+    - name: Assert target has been set
+      ansible.builtin.assert:
+        that:
+          - namespace != 'NAMESPACE'
+          - workload != 'DEPLOYMENT'
+        fail_msg: "Set namespace and workload before running."
+    - name: Apply the RuntimeDefault seccomp profile (blocks the exploit's syscalls)
+      kubernetes.core.k8s:
+        state: patched
+        kind: Deployment
+        name: "{{ workload }}"
+        namespace: "{{ namespace }}"
+        definition:
+          spec:
+            template:
+              spec:
+                securityContext:
+                  seccompProfile:
+                    type: RuntimeDefault
+"""
+
+_OCP_CORDON_DRAIN = """\
+- name: Shift workloads off the vulnerable node (cordon & drain) for __CVE__
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    node_name: "NODE"   # FILL IN: the vulnerable node to evacuate onto patched nodes
+  tasks:
+    - name: Assert the node has been set
+      ansible.builtin.assert:
+        that: node_name != 'NODE'
+        fail_msg: "Set node_name before running."
+    - name: Cordon and drain the node so pods reschedule onto patched/unaffected nodes
+      kubernetes.core.k8s_drain:
+        name: "{{ node_name }}"
+        state: drain
+        delete_options:
+          ignore_daemonsets: true
+          delete_emptydir_data: true
+          wait_timeout: 120
+"""
+
+_OCP_NODE_UPDATE = """\
+- name: Roll fixed nodes via MachineConfig behind a PodDisruptionBudget for __CVE__
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    namespace: "NAMESPACE"                 # FILL IN: the workload's namespace
+    pod_selector: {app: "APP_LABEL"}       # FILL IN: labels of the pods that must stay up
+    min_available: 1                       # keep at least this many replicas during node drains
+    machine_config_pool: worker            # the MCP the fix rolls through (worker/master)
+  tasks:
+    - name: Assert targets have been set
+      ansible.builtin.assert:
+        that: namespace != 'NAMESPACE'
+        fail_msg: "Set namespace and pod_selector before running."
+    - name: Protect the workload during rolling node reboots with a PodDisruptionBudget
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: ndvm-pdb-__CVE_SLUG__
+            namespace: "{{ namespace }}"
+          spec:
+            minAvailable: "{{ min_available }}"
+            selector:
+              matchLabels: "{{ pod_selector }}"
+    - name: Wait for the Machine Config Operator to finish rolling the fixed nodes
+      kubernetes.core.k8s_info:
+        api_version: machineconfiguration.openshift.io/v1
+        kind: MachineConfigPool
+        name: "{{ machine_config_pool }}"
+      register: mcp
+      until: >-
+        mcp.resources[0].status.machineCount | default(0) ==
+        mcp.resources[0].status.updatedMachineCount | default(-1)
+      retries: 60
+      delay: 30
+"""
+
 # platform, action_type -> template. Title keywords disambiguate the OpenShift
 # 'config' options (SCC vs admission policy). Entries keyed by catalog_id are
 # selected directly by build_playbook when the recommended option matches — every
@@ -815,6 +908,9 @@ _TEMPLATES = {
     "ocp_default_deny": _OS_NETWORKPOLICY,
     "ocp_quarantine_nodes": _OCP_QUARANTINE_NODES,
     "ocp_roll_image": _OCP_ROLL_IMAGE,
+    "ocp_seccomp": _OCP_SECCOMP,
+    "ocp_cordon_drain": _OCP_CORDON_DRAIN,
+    "ocp_node_update": _OCP_NODE_UPDATE,
 }
 
 
@@ -1017,7 +1113,8 @@ if __name__ == "__main__":
     # catalog_id selects a curated template directly for options that used to scaffold.
     id_cases = ["rhel_service_restart", "rhel_systemd_harden", "rhel_openssh_harden",
                 "rhel_http_surface", "rhel_crypto_policy", "rhel_container_runtime",
-                "rhel_insights_remediation", "ocp_acs_policy"]
+                "rhel_insights_remediation", "ocp_acs_policy",
+                "ocp_seccomp", "ocp_cordon_drain", "ocp_node_update"]
     for cid in id_cases:
         pb = build_playbook(platform="rhel", action_type="config", title=cid,
                             steps=[], source_urls=["https://access.redhat.com/x"],

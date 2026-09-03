@@ -35,7 +35,8 @@ except Exception:  # pragma: no cover - internal API, tolerate its absence
 from accounts import (account_view, default_cve, detect_account, estate_as_answers,
                       load_account)
 from cve_parse import filter_rag_hits_for_cve, find_cves, prefer_mitigation_hits, valid_cve
-from harvest import harvest_answers, merge_answers, remaining_cves, select_cve
+from harvest import (detect_platform, harvest_answers, merge_answers, remaining_cves,
+                     select_cve)
 from catalog import (catalog_context, filter_applicable_hits, materialize_options,
                      pin_options_to_catalog)
 from control_matrix import validate_control
@@ -289,6 +290,25 @@ def _gate_agent() -> Agent:
             "CVE until the picture fits."
         ),
         llm=get_llm(), verbose=False,
+    )
+
+
+def _platform_gate() -> Sufficiency:
+    """Ask the platform deterministically — the menu (RHEL host plane vs OpenShift
+    workload plane) is chosen by it, so NDVM never guesses or lets the LLM decide."""
+    return Sufficiency(
+        sufficient=False,
+        missing=["platform"],
+        questions=[ClarifyQuestion(
+            key="platform",
+            question=("Which platform is this running on? It selects the mitigation "
+                      "set, so I won't guess it."),
+            options=["Red Hat Enterprise Linux (RHEL) host",
+                     "Red Hat OpenShift",
+                     "Other / mixed",
+                     OTHER_OPTION],
+            multi=False,
+        )],
     )
 
 
@@ -585,6 +605,15 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
     if not valid_cve(intake.cve):
         return {"needs_cve": True}
 
+    # Platform is deterministic: from the user's own words / gate choice, or the account
+    # estate (set upstream in triage). Never the LLM router's guess; ask if still unknown.
+    plat = detect_platform(message, answers)
+    if plat is None and intake.platform in ("rhel", "openshift"):
+        plat = intake.platform          # deterministically set by triage / account estate
+    if plat is None:
+        return {"needs_platform": True}
+    intake = intake.model_copy(update={"platform": plat})
+
     sig = assess(intake.cve)
     freeze = any(x in f"{intake.constraint} {answers}".lower()
                  for x in ("freeze", "no reboot", "can't reboot", "cannot reboot",
@@ -600,8 +629,11 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
     progress.check_cancel()
     with ThreadPoolExecutor(max_workers=3) as ex:
         fp = ex.submit(lookup_vuln_finding, intake.cve, intake.product)
+        # k=12: the curated menu is small (~16 rows); retrieve enough that component-
+        # specific rows (e.g. kpatch, gated on 'kernel') survive to deterministic gating
+        # instead of being dropped by a narrow top-6 similarity cut.
         fr = ex.submit(rag_search_hybrid, f"{intake.cve} {intake.constraint}",
-                       intake.platform, 6, 20, ("mitigation",))
+                       intake.platform, 12, 20, ("mitigation",))
         # ponytail: PDF is secondary prose for validator only — never option synthesis
         fpdf = ex.submit(
             rag_search_hybrid,
@@ -623,7 +655,7 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
     rag_hits = prefer_mitigation_hits(filter_rag_hits_for_cve(rag_hits, intake.cve))
     pdf_hits = filter_rag_hits_for_cve(pdf_hits, intake.cve)
     rag_hits = filter_applicable_hits(
-        rag_hits, pinned, intake.product or "", intake.platform or "")
+        rag_hits, pinned, intake.product or "", intake.platform or "", message)
     catalog_options = materialize_options(rag_hits)
     if not catalog_options:
         return _knowledge_base_unavailable(
@@ -903,6 +935,14 @@ class NDVMFlow(Flow[NDVMState]):
         if sel:
             self.state.intake.cve = sel
 
+        # Platform is deterministic and mandatory: ask if the user's message isn't clear,
+        # never guess and never let the LLM decide — even under force.
+        plat = detect_platform(self.state.message, self.state.answers)
+        if plat is None:
+            self.state.gate = _platform_gate()
+            return
+        self.state.intake.platform = plat
+
         if self.state.force or _gate_already_satisfied(self.state.answers):
             # Harvested freeze → skip LLM gate wait (was the one-CVE "stuck" feeling).
             if not self.state.force and _gate_already_satisfied(self.state.answers):
@@ -995,6 +1035,11 @@ def advise(message: str, forced_persona: str = "", answers: str = "",
                 "advice": None,
                 "missing": s.gate.missing,
                 "questions": [q.model_dump() for q in s.gate.questions],
+                "answers": s.answers})
+    if isinstance(s.result, dict) and s.result.get("needs_platform"):
+        return _attach_unknown({"intake": s.intake.model_dump(), "status": "need_info",
+                "advice": None, "missing": ["platform"],
+                "questions": [q.model_dump() for q in _platform_gate().questions],
                 "answers": s.answers})
     if isinstance(s.result, dict) and s.result.get("needs_cve"):
         return _attach_unknown({"intake": s.intake.model_dump(), "status": "need_cve",

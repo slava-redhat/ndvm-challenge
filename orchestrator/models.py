@@ -58,6 +58,9 @@ class VulnFinding(BaseModel):
     ndvm_applies: bool = True            # False only when fix_state is 'Not affected' (Fixed still applies)
     rhsa: Optional[str] = None
     fixed_nvra: Optional[str] = None
+    cwe: str = ""                        # Red Hat CWE id(s), e.g. 'CWE-416' — drives attack-class gating
+    description: str = ""                # the vulnerability MECHANISM (bugzilla/details), not fix-state prose
+    affected_packages: List[str] = []    # authoritative RH package names — drives component gating (kernel, openssh…)
     rationale: str = ""
     source_urls: List[str] = []
 
