@@ -24,8 +24,8 @@ from pathlib import Path
 from string import Template
 
 
-ROOT = Path(__file__).resolve().parents[1]
-OCP_DIR = ROOT / "ocp"
+ROOT = Path(__file__).resolve().parents[2]
+OCP_DIR = ROOT / "infra" / "ocp"
 K8S_DIR = OCP_DIR / "k8s"
 
 # Conservative defaults sized for a shared trial/sandbox project (small quota).

@@ -206,14 +206,14 @@ make stats             # corpus totals (chunks / mitigations / CVEs)
 make pdfs              # where to drop PDFs + what's there now
 make health            # orchestrator health check (curl /health)
 make test              # run the trust-critical CVE parser test
-make vector-db-backup  # export local pgvector DB to gcp/backups/ndvm-vector.sql.gz
-make vector-db-restore # restore backup into the current kubectl context (GKE)
+make vector-db-backup  # export local pgvector DB (TARGET=gcp|ocp, default gcp)
+make vector-db-restore # restore backup into the current context (TARGET=gcp|ocp, default gcp)
 ```
 
 ## GKE deployment
 
-Full workflow in [`gcp/GKE-WORKFLOW.md`](gcp/GKE-WORKFLOW.md). All provisioning and
-deploy logic lives in `gcp/gke.py` — no shell wrappers.
+Full workflow in [`infra/gcp/GKE-WORKFLOW.md`](infra/gcp/GKE-WORKFLOW.md). All provisioning
+and deploy logic lives in `infra/gcp/gke.py` — no shell wrappers.
 
 ### Architecture
 
@@ -234,12 +234,12 @@ conda activate gcp-auth                    # isolated GCP auth env
 export GCP_PROJECT_ID="your-project"
 export GKE_MACHINE_TYPE=e2-standard-4      # recommended tier
 
-python3 gcp/gke.py provision              # GKE cluster + Artifact Registry + ingress-nginx
-python3 gcp/gke.py deploy                 # build images, push, create secrets, apply manifests
-python3 gcp/gke.py deploy --tag v1.0.0    # tagged release
+python3 infra/gcp/gke.py provision              # GKE cluster + Artifact Registry + ingress-nginx
+python3 infra/gcp/gke.py deploy                 # build images, push, create secrets, apply manifests
+python3 infra/gcp/gke.py deploy --tag v1.0.0    # tagged release
 
 # Clone the local vector database (ingest is local-only)
-make vector-db-backup                      # → gcp/backups/ndvm-vector.sql.gz
+make vector-db-backup                      # → infra/gcp/backups/ndvm-vector.sql.gz
 make vector-db-restore                     # → scales orchestrator to 0, restores, scales back
 ```
 
@@ -256,7 +256,7 @@ Synthetic TAM estates (`data/accounts/*.json`) go into the `ndvm-account-data` C
 After changing `.env`, ADC, or account files:
 
 ```bash
-python3 gcp/gke.py sync-secrets           # updates secrets + restarts orchestrator
+python3 infra/gcp/gke.py sync-secrets           # updates secrets + restarts orchestrator
 ```
 
 ### DB migration
@@ -270,20 +270,36 @@ Postgres. For additive changes (new indexes, columns), apply them directly:
 kubectl -n ndvm exec -i statefulset/postgres -- psql -U ndvm ndvm < db/schema.sql
 ```
 
-### Resource tiers
-
-| Tier | Node | ~$/mo | Use case |
-|------|------|------:|----------|
-| `e2-medium` | 1 shared vCPU, 4GB | $25 | Manifest smoke test only |
-| `e2-standard-2` | 2 vCPU, 8GB | $49 | Single-user proof of concept |
-| `e2-standard-4` | 4 vCPU, 16GB | $97 | **Recommended** — responsive retrieval |
-| `e2-standard-8` | 8 vCPU, 32GB | $194 | Concurrent users |
-
 ### Other commands
 
 ```bash
-python3 gcp/gke.py ingress --wait         # print the external URL (waits for LB)
-python3 gcp/gke.py teardown --yes          # irreversibly removes cluster + images
+python3 infra/gcp/gke.py ingress --wait         # print the external URL (waits for LB)
+python3 infra/gcp/gke.py teardown --yes          # irreversibly removes cluster + images
+```
+
+## OpenShift deployment
+
+Full workflow in [`infra/ocp/README.md`](infra/ocp/README.md). Deploys the same stack
+as the GKE path (postgres+pgvector, ollama, orchestrator, ui) to an existing OpenShift
+project — trial/Developer Sandbox included — via `infra/ocp/openshift.py` (drives `oc`
+instead of `gcloud`/`kubectl`).
+
+Key differences from GKE: `BuildConfig` (binary Docker build) + `ImageStream` instead of
+Cloud Build + Artifact Registry, `Route`s instead of `Ingress`, and no fixed UID (the
+`restricted` SCC assigns one automatically).
+
+```bash
+oc login --token=... --server=...          # or: oc project <your-project>
+python3 infra/ocp/openshift.py bootstrap        # one-time: ServiceAccount + ImageStreams/BuildConfigs
+python3 infra/ocp/openshift.py deploy           # build images, sync secrets, apply manifests, print routes
+
+# Clone the local vector database (ingest is local-only)
+make vector-db-backup TARGET=ocp           # → infra/ocp/backups/ndvm-vector.sql.gz
+make vector-db-restore TARGET=ocp          # → scales orchestrator to 0, restores, scales back
+
+python3 infra/ocp/openshift.py sync-secrets     # re-sync .env / accounts / schema.sql without rebuilding
+python3 infra/ocp/openshift.py routes           # print route URLs
+python3 infra/ocp/openshift.py teardown --yes   # delete all NDVM resources in the project
 ```
 
 ## Adding platforms / mitigations / docs
@@ -337,5 +353,5 @@ python orchestrator/catalog.py         # catalog applicability gates
 # Ingest + UI + GKE tests
 python -m pytest ingest/tests/         # PDF source mapping
 python -m pytest ui/tests/             # gate follow-up UX
-python -m pytest gcp/tests/            # GKE deploy + Ollama manifests
+python -m pytest infra/gcp/tests/      # GKE deploy + Ollama manifests
 ```

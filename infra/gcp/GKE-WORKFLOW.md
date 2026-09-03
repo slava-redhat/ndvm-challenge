@@ -5,7 +5,7 @@ FastAPI orchestrator, private Ollama embedding service, and Streamlit UI. The ve
 corpus is deliberately cloned from the local database rather than re-ingested in GKE:
 it includes the curated mitigation catalog, hardening-PDF evidence, vector embeddings,
 and ingestion ledger. Live Red Hat CVE/VEX facts remain runtime API data. All
-provisioning and deploy logic is in `gcp/gke.py`; no shell wrapper is required.
+provisioning and deploy logic is in `infra/gcp/gke.py`; no shell wrapper is required.
 
 ## Prerequisites
 
@@ -82,7 +82,7 @@ Postgres password, and the desired embedding model. Keep
 
 The synthetic TAM estates in `data/accounts/*.json` are copied during deployment into
 the `ndvm-account-data` ConfigMap and mounted read-only at `/app/data/accounts`. After
-editing those files, run `python3 gcp/gke.py sync-secrets` to update the ConfigMap and
+editing those files, run `python3 infra/gcp/gke.py sync-secrets` to update the ConfigMap and
 restart the orchestrator.
 
 ```bash
@@ -93,7 +93,7 @@ export GCP_PROJECT_ID="your-project"
 ## 1. Provision
 
 ```bash
-python3 gcp/gke.py provision
+python3 infra/gcp/gke.py provision
 ```
 
 This enables the required APIs, creates the Artifact Registry repository, creates a
@@ -102,8 +102,8 @@ single-node GKE cluster, and installs ingress-nginx.
 ## 2. Deploy
 
 ```bash
-python3 gcp/gke.py deploy
-python3 gcp/gke.py deploy --tag v1.0.0
+python3 infra/gcp/gke.py deploy
+python3 infra/gcp/gke.py deploy --tag v1.0.0
 ```
 
 The command builds and pushes the orchestrator and UI images concurrently with Cloud
@@ -116,7 +116,7 @@ restored local vector database. Each deployment synchronizes both Secrets and re
 the orchestrator. To copy a later `.env` or ADC credential change:
 
 ```bash
-python3 gcp/gke.py sync-secrets
+python3 infra/gcp/gke.py sync-secrets
 ```
 
 Use a unique image tag for traceability (for example, a release or Git SHA).
@@ -148,7 +148,7 @@ make stats
 make vector-db-backup
 ```
 
-This creates `gcp/backups/ndvm-vector.sql.gz`. It includes every NDVM database table:
+This creates `infra/gcp/backups/ndvm-vector.sql.gz`. It includes every NDVM database table:
 all `doc_chunk` rows and their pgvector embeddings, catalog metadata/steps/source URLs,
 cached CVE data, product states, and the ingestion ledger. The deployed orchestrator
 uses the catalog fail-closed: only applicable, stable-ID catalog rows can become
@@ -198,11 +198,11 @@ echo "UI:  http://${INGRESS_ADDRESS}/"
 echo "API: http://${INGRESS_ADDRESS}/health"
 ```
 
-`python3 gcp/gke.py deploy` prints the NDVM ingress URL once the rollout completes.
+`python3 infra/gcp/gke.py deploy` prints the NDVM ingress URL once the rollout completes.
 To retrieve it later, or wait for a newly provisioned address:
 
 ```bash
-python3 gcp/gke.py ingress --wait
+python3 infra/gcp/gke.py ingress --wait
 ```
 
 Open the printed **UI** URL in a browser. Confirm the API separately:
@@ -234,7 +234,7 @@ kubectl cordon <old-node>
 kubectl drain <old-node> --ignore-daemonsets --delete-emptydir-data
 gcloud container node-pools delete default-pool \
   --cluster=ndvm --zone="${GCP_ZONE:-us-central1-a}"
-GKE_MACHINE_TYPE=e2-standard-4 python3 gcp/gke.py deploy
+GKE_MACHINE_TYPE=e2-standard-4 python3 infra/gcp/gke.py deploy
 ```
 
 ## 6. Teardown
@@ -242,7 +242,7 @@ GKE_MACHINE_TYPE=e2-standard-4 python3 gcp/gke.py deploy
 This irreversibly removes the cluster and Artifact Registry images:
 
 ```bash
-python3 gcp/gke.py teardown --yes
+python3 infra/gcp/gke.py teardown --yes
 ```
 
 ## Resource Tiers
@@ -269,8 +269,8 @@ Use `e2-standard-4` for a normal interactive RAG deployment:
 
 ```bash
 export GKE_MACHINE_TYPE=e2-standard-4
-python3 gcp/gke.py provision
-python3 gcp/gke.py deploy
+python3 infra/gcp/gke.py provision
+python3 infra/gcp/gke.py deploy
 ```
 
 It provides enough headroom for Postgres, the Ollama embedding service, the API, UI,
@@ -282,7 +282,7 @@ demonstrating concurrent requests or evaluating RAG latency. Tear the environmen
 down when not actively testing:
 
 ```bash
-python3 gcp/gke.py teardown --yes
+python3 infra/gcp/gke.py teardown --yes
 ```
 
 ### Why E2, and when to benchmark C4D

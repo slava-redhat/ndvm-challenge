@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Copy the local NDVM pgvector database to a provisioned Postgres pod."""
+"""Copy the local NDVM pgvector database to/from Postgres running on
+OpenShift. Mirrors gcp/db_transfer.py but drives the postgres pod via `oc`
+instead of `kubectl` (the dump format is identical — a backup created here
+or under gcp/ can be restored on either target)."""
 
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def run(args: list[str], *, capture: bool = False) -> str:
@@ -51,23 +54,30 @@ def backup(output: Path) -> None:
     print(f"Created {output}")
 
 
+def namespace_default() -> str:
+    ns = os.environ.get("OCP_NAMESPACE")
+    if ns:
+        return ns
+    return run(["oc", "project", "-q"], capture=True).strip() or "ndvm"
+
+
 def replicas(namespace: str) -> str:
     return run([
-        "kubectl", "-n", namespace, "get", "deployment/orchestrator",
+        "oc", "-n", namespace, "get", "deployment/orchestrator",
         "-o", "jsonpath={.spec.replicas}",
     ], capture=True).strip() or "1"
 
 
 def restore(source: Path, namespace: str) -> None:
-    require("kubectl")
+    require("oc")
     if not source.is_file():
         raise SystemExit(f"Backup file does not exist: {source}")
     original_replicas = replicas(namespace)
-    run(["kubectl", "-n", namespace, "scale", "deployment/orchestrator", "--replicas=0"])
+    run(["oc", "-n", namespace, "scale", "deployment/orchestrator", "--replicas=0"])
     try:
         restore_process = subprocess.Popen(
             [
-                "kubectl", "-n", namespace, "exec", "-i", "postgres-0", "--",
+                "oc", "-n", namespace, "exec", "-i", "postgres-0", "--",
                 "psql", "-v", "ON_ERROR_STOP=1",
                 "-h", "127.0.0.1",
                 "-U", os.environ.get("POSTGRES_USER", "ndvm"),
@@ -84,7 +94,7 @@ def restore(source: Path, namespace: str) -> None:
             raise SystemExit("Postgres restore failed.")
     finally:
         run([
-            "kubectl", "-n", namespace, "scale", "deployment/orchestrator",
+            "oc", "-n", namespace, "scale", "deployment/orchestrator",
             f"--replicas={original_replicas}",
         ])
     print(f"Restored {source} into {namespace}/postgres-0")
@@ -97,12 +107,12 @@ def main() -> None:
     backup_parser.add_argument("--output", type=Path, required=True)
     restore_parser = commands.add_parser("restore", help="Restore a dump into Postgres")
     restore_parser.add_argument("--input", type=Path, required=True)
-    restore_parser.add_argument("--namespace", default=os.environ.get("K8S_NAMESPACE", "ndvm"))
+    restore_parser.add_argument("--namespace", default=None)
     args = parser.parse_args()
     if args.action == "backup":
         backup(args.output)
     else:
-        restore(args.input, args.namespace)
+        restore(args.input, args.namespace or namespace_default())
 
 
 if __name__ == "__main__":

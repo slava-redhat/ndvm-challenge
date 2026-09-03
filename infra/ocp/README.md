@@ -1,11 +1,11 @@
 # NDVM on OpenShift (trial / Developer Sandbox)
 
-Deploys the same stack as `gcp/` (postgres+pgvector, ollama, orchestrator,
+Deploys the same stack as `infra/gcp/` (postgres+pgvector, ollama, orchestrator,
 ui) to an existing OpenShift project — e.g.
 `rh-ee-swasserm-dev` on a trial cluster like
 `console-openshift-console.apps.rm2.thpm.p1.openshiftapps.com`.
 
-Differences from the GKE deployment (`gcp/gke.py`):
+Differences from the GKE deployment (`infra/gcp/gke.py`):
 
 | GKE                                   | OpenShift                                    |
 |----------------------------------------|-----------------------------------------------|
@@ -32,7 +32,7 @@ Differences from the GKE deployment (`gcp/gke.py`):
 ## 1. Bootstrap (one-time)
 
 ```
-python3 ocp/openshift.py bootstrap
+python3 infra/ocp/openshift.py bootstrap
 ```
 
 Creates the `ndvm` ServiceAccount and the `orchestrator`/`ui` ImageStreams +
@@ -45,13 +45,13 @@ If a pod still fails with a permission error on your specific cluster (some
 clusters have non-standard SCC/fsGroup config), you can grant `anyuid` as a
 troubleshooting escape hatch — requires project-admin rights:
 ```
-python3 ocp/openshift.py grant-anyuid
+python3 infra/ocp/openshift.py grant-anyuid
 ```
 
 ## 2. Deploy
 
 ```
-python3 ocp/openshift.py deploy
+python3 infra/ocp/openshift.py deploy
 ```
 
 This:
@@ -64,13 +64,14 @@ This:
 ## Restore an existing DB dump
 
 The dump format is plain `pg_dump` gzip'd SQL — the same file works whether
-it was created for GCP or here. Reuse `gcp/backups/ndvm-vector.sql.gz` (or
-create a fresh one from your local podman-compose stack):
+it was created for GCP or here. Reuse `infra/gcp/backups/ndvm-vector.sql.gz` (or
+create a fresh one from your local podman-compose stack), via the repo-root
+`make` targets (`TARGET=ocp` selects this script and `infra/ocp/backups/`):
 ```
-python3 ocp/db_transfer.py restore --input gcp/backups/ndvm-vector.sql.gz
+make vector-db-restore TARGET=ocp VECTOR_DB_BACKUP=infra/gcp/backups/ndvm-vector.sql.gz
 # or, to make a new backup from your local stack first:
-python3 ocp/db_transfer.py backup --output ocp/backups/ndvm-vector.sql.gz
-python3 ocp/db_transfer.py restore --input ocp/backups/ndvm-vector.sql.gz
+make vector-db-backup TARGET=ocp
+make vector-db-restore TARGET=ocp
 ```
 This scales `orchestrator` to 0, streams the dump into the `postgres-0` pod
 via `oc exec`, then restores the original replica count.
@@ -78,9 +79,9 @@ via `oc exec`, then restores the original replica count.
 ## Other commands
 
 ```
-python3 ocp/openshift.py sync-secrets   # re-sync .env / data/accounts / schema.sql without rebuilding
-python3 ocp/openshift.py routes         # print route URLs
-python3 ocp/openshift.py teardown --yes # delete all NDVM resources in the project
+python3 infra/ocp/openshift.py sync-secrets   # re-sync .env / data/accounts / schema.sql without rebuilding
+python3 infra/ocp/openshift.py routes         # print route URLs
+python3 infra/ocp/openshift.py teardown --yes # delete all NDVM resources in the project
 ```
 
 ## Storage quota
@@ -89,5 +90,5 @@ Trial/sandbox projects usually carry small storage quotas. Defaults here are
 conservative (`POSTGRES_STORAGE=5Gi`, `OLLAMA_STORAGE=2Gi`); override via
 environment variables if your project's quota allows more:
 ```
-POSTGRES_STORAGE=20Gi OLLAMA_STORAGE=5Gi python3 ocp/openshift.py deploy
+POSTGRES_STORAGE=20Gi OLLAMA_STORAGE=5Gi python3 infra/ocp/openshift.py deploy
 ```

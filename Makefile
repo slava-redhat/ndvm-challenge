@@ -12,7 +12,13 @@ POSTGRES_DB   ?= ndvm
 # back to that address even when the host itself can.
 OLLAMA_LOCAL_URL ?= http://127.0.0.1:11434
 DC = podman-compose --env-file .env
-VECTOR_DB_BACKUP ?= gcp/backups/ndvm-vector.sql.gz
+# Target platform for the vector-db-backup/vector-db-restore transfer scripts.
+# Usage: make vector-db-restore TARGET=ocp (defaults to gcp).
+TARGET ?= gcp
+ifeq ($(filter $(TARGET),gcp ocp),)
+$(error TARGET must be "gcp" or "ocp", got "$(TARGET)")
+endif
+VECTOR_DB_BACKUP ?= infra/$(TARGET)/backups/ndvm-vector.sql.gz
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -69,11 +75,11 @@ pdfs: ## Where to drop hardening PDFs, and what's there now
 health: ## Orchestrator health check
 	@curl -s http://localhost:8000/health | python3 -m json.tool || echo "orchestrator not up"
 
-vector-db-backup: ## Export local pgvector database
-	python3 gcp/db_transfer.py backup --output "$(VECTOR_DB_BACKUP)"
+vector-db-backup: ## Export local pgvector database (TARGET=gcp|ocp, default gcp)
+	python3 infra/$(TARGET)/db_transfer.py backup --output "$(VECTOR_DB_BACKUP)"
 
-vector-db-restore: ## Restore VECTOR_DB_BACKUP into the current kubectl context
-	python3 gcp/db_transfer.py restore --input "$(VECTOR_DB_BACKUP)"
+vector-db-restore: ## Restore VECTOR_DB_BACKUP into the current context (TARGET=gcp|ocp, default gcp)
+	python3 infra/$(TARGET)/db_transfer.py restore --input "$(VECTOR_DB_BACKUP)"
 
 test: ## Run the trust-critical CVE parser test
 	cd orchestrator && PYTHONPATH=. python3 tests/test_cve_parse.py

@@ -6,8 +6,8 @@ __pycache__/
 *.pyc
 data/pdfs/*.pdf
 .venv/
-gcp/backups/*.sql.gz
-ocp/backups/*.sql.gz
+infra/gcp/backups/*.sql.gz
+infra/ocp/backups/*.sql.gz
 
 # docs excluded from this repo (design narrative kept locally)
 docs/
@@ -19,3 +19,4 @@ jupyter/
 .claude/
 .cursor/
 .githooks/
+.ansible/
