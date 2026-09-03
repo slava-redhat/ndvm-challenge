@@ -293,19 +293,19 @@ def _gate_agent() -> Agent:
     )
 
 
-def _platform_gate() -> Sufficiency:
+def _platform_gate(note: str = "") -> Sufficiency:
     """Ask the platform deterministically — the menu (RHEL host plane vs OpenShift
     workload plane) is chosen by it, so NDVM never guesses or lets the LLM decide."""
+    q = ("Which platform is this running on? It selects the mitigation set, so I "
+         "won't guess it.")
     return Sufficiency(
         sufficient=False,
         missing=["platform"],
         questions=[ClarifyQuestion(
             key="platform",
-            question=("Which platform is this running on? It selects the mitigation "
-                      "set, so I won't guess it."),
+            question=(f"{note} {q}".strip() if note else q),
             options=["Red Hat Enterprise Linux (RHEL) host",
                      "Red Hat OpenShift",
-                     "Other / mixed",
                      OTHER_OPTION],
             multi=False,
         )],
@@ -343,15 +343,6 @@ def _drop_unknown_cves(message: str) -> tuple[list[str], list[str]]:
     elif keep:
         progress.emit(f"CVE id confirmed in Red Hat data: {', '.join(keep)}")
     return keep, unknown
-
-
-def _gate_already_satisfied(answers: str) -> bool:
-    """Skip the LLM gate when the opening message already stated the freeze constraint.
-
-    One-CVE demos were 'stuck' on the prior step for minutes waiting on this LLM call;
-    two-CVE messages often returned earlier via which_cve and looked fine.
-    """
-    return "maintenance_window" in _answered_gate_keys(answers)
 
 
 def run_gate(message: str, intake: Intake, answers: str = "",
@@ -608,8 +599,8 @@ def run_advice(intake: Intake, persona: str, answers: str = "",
     # Platform is deterministic: from the user's own words / gate choice, or the account
     # estate (set upstream in triage). Never the LLM router's guess; ask if still unknown.
     plat = detect_platform(message, answers)
-    if plat is None and intake.platform in ("rhel", "openshift"):
-        plat = intake.platform          # deterministically set by triage / account estate
+    if plat not in ("rhel", "openshift"):    # None or 'unsupported'
+        plat = intake.platform if intake.platform in ("rhel", "openshift") else None
     if plat is None:
         return {"needs_platform": True}
     intake = intake.model_copy(update={"platform": plat})
@@ -938,17 +929,21 @@ class NDVMFlow(Flow[NDVMState]):
         # Platform is deterministic and mandatory: ask if the user's message isn't clear,
         # never guess and never let the LLM decide — even under force.
         plat = detect_platform(self.state.message, self.state.answers)
+        if plat == "unsupported":
+            self.state.gate = _platform_gate(
+                "NDVM covers Red Hat Enterprise Linux (and rebuilds such as CentOS, "
+                "Rocky, AlmaLinux) or Red Hat OpenShift — pick the closest one.")
+            return
         if plat is None:
             self.state.gate = _platform_gate()
             return
         self.state.intake.platform = plat
 
-        if self.state.force or _gate_already_satisfied(self.state.answers):
-            # Harvested freeze → skip LLM gate wait (was the one-CVE "stuck" feeling).
-            if not self.state.force and _gate_already_satisfied(self.state.answers):
-                progress.emit("Maintenance freeze already stated — skipping more questions")
+        if self.state.force:
             self.state.gate = Sufficiency(sufficient=True)
             return
+        # A stated freeze alone does NOT mean the case is understood — still investigate
+        # existing controls / exposure / backup-DR (harvested facts won't be re-asked).
         progress.emit("Checking the case fits your environment")
         self.state.gate = run_gate(self.state.message, self.state.intake, self.state.answers,
                                  named=named)

@@ -127,28 +127,33 @@ _HARVEST_RULES: list[tuple[str, str, list[tuple[re.Pattern[str], str]]]] = [
 _OCP_SIGNALS = ("openshift", "ocp", "kubernetes", "k8s", "rhcos", "kubelet",
                 "machineconfig", "container platform", "cri-o", "crio", "oc adm",
                 "oc apply", "oc get")
-# Unambiguous RHEL host-plane signals.
+# RHEL host-plane signals, including binary-compatible rebuilds (CentOS, Rocky,
+# AlmaLinux, Oracle/Scientific Linux) — same package + host mitigation ecosystem, so
+# the RHEL menu applies. Mapping them is deterministic (they ARE RHEL-family), not a guess.
 _RHEL_SIGNALS = ("rhel", "red hat enterprise", "enterprise linux",
-                 " el7", " el8", " el9", ".el7", ".el8", ".el9")
+                 " el7", " el8", " el9", ".el7", ".el8", ".el9",
+                 "centos", "rocky", "almalinux", "alma linux",
+                 "oracle linux", "scientific linux")
 
 
 def _platform_from_answer(answers: str) -> str | None:
-    """Deterministically read an explicit platform CHOICE the user made in the gate.
+    """Deterministically read the explicit platform CHOICE the user made in the gate.
 
-    None when unanswered/blank. An explicit 'Other' choice maps to 'other' (search
-    both menus) — that is the user's own selection, not a guess."""
+    Returns 'rhel' / 'openshift' for a supported plane, 'unsupported' when they named a
+    non–Red Hat platform (e.g. Ubuntu) so the caller can say so instead of looping, or
+    None when there is no answer line yet."""
     for line in (answers or "").splitlines():
         m = re.match(r"^\[platform\]\s*[^:]*:\s*(.+)$", line.strip(), re.I)
         if not m:
             continue
         val = m.group(1).strip().lower()
-        if not val or val in ("(no answer)", "not sure"):
+        if not val or val == "(no answer)":
             return None
         if any(t in val for t in _OCP_SIGNALS):
             return "openshift"
-        if "rhel" in val or "enterprise linux" in val:
+        if any(t in val for t in _RHEL_SIGNALS):
             return "rhel"
-        return "other"
+        return "unsupported"      # explicit answer that names neither Red Hat platform
     return None
 
 
@@ -158,10 +163,10 @@ def detect_platform(message: str, answers: str = "") -> str | None:
     The platform selects the ENTIRE mitigation menu (RHEL host plane vs OpenShift
     workload plane); a wrong pick silently hides the right answer (e.g. kpatch for a
     kernel CVE). So it is read only from what the user actually stated:
-      - an explicit gate CHOICE, else
-      - an unambiguous signal in the message (OpenShift XOR RHEL).
+      - an explicit gate CHOICE (may be 'unsupported'), else
+      - an unambiguous signal in the message (OpenShift XOR RHEL-family).
     Returns None when the message is unclear (neither signal, or both) so the caller
-    ASKS the user instead of guessing.
+    ASKS instead of guessing.
     """
     chosen = _platform_from_answer(answers)
     if chosen:
@@ -275,5 +280,14 @@ if __name__ == "__main__":
     q2 = "[platform] Which platform is this on?: Red Hat Enterprise Linux (RHEL) host"
     assert detect_platform("kernel issue", q2) == "rhel"
     assert detect_platform("kernel issue", "[platform] x: (no answer)") is None
+    assert detect_platform("x", "[platform] q: Other: OpenShift 4.14") == "openshift"
+    # RHEL-family rebuilds map to the RHEL menu deterministically.
+    assert detect_platform("x", "[platform] q: Other: Centos") == "rhel"
+    assert detect_platform("x", "[platform] q: Other: Rocky Linux") == "rhel"
+    assert detect_platform("centos 8 host, kernel bug") == "rhel"
+    # A genuinely non–Red Hat platform is flagged 'unsupported' (caller says so, no loop).
+    assert detect_platform("kernel issue", "[platform] q: Other: Ubuntu 22.04") == "unsupported"
+    # ...but a bare message mention of a non-RH OS just asks (weaker than an explicit choice).
+    assert detect_platform("ubuntu box with a bug") is None
     assert harvest_answers("we run SELinux enforcing and can't reboot until quarter-end")
     print("ok")

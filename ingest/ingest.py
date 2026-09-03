@@ -82,6 +82,7 @@ def add_chunk(cur, text, source_url, platform, doc_type, source, embedding=None,
     meta = {"platform": platform, "doc_type": doc_type, "source": source}
     if extra_meta:
         meta.update(extra_meta)
+    text = text.replace("\x00", "")  # PG text fields reject NUL; PDF extraction leaks them
     emb = embedding if embedding is not None else embed(text, task="search_document")
     cur.execute(
         "INSERT INTO doc_chunk (text, source_url, metadata, embedding) "

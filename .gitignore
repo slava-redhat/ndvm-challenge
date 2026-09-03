@@ -7,6 +7,7 @@ __pycache__/
 data/pdfs/*.pdf
 .venv/
 gcp/backups/*.sql.gz
+ocp/backups/*.sql.gz
 
 # docs excluded from this repo (design narrative kept locally)
 docs/
