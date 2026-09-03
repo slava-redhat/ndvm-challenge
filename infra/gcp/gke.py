@@ -16,8 +16,8 @@ from pathlib import Path
 from string import Template
 
 
-ROOT = Path(__file__).resolve().parents[1]
-GCP_DIR = ROOT / "gcp"
+ROOT = Path(__file__).resolve().parents[2]
+GCP_DIR = ROOT / "infra" / "gcp"
 K8S_DIR = GCP_DIR / "k8s"
 
 TIERS = {
